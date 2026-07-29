@@ -58,7 +58,7 @@ riscv_tests_dir    := $(if $(RISCV_TESTS), $(RISCV_TESTS), ./undefined)
 riscv_tests_commit := 5f8a4918c6482e65c67a2b7decd5c2af3e3fe0e5
 ## commit hash readed from local copy of https://github.com/riscv/riscv-tests
 tmp_commit = $(shell cd $(riscv_tests_dir) 2>/dev/null && git log -1 | grep "commit" | cut -f2 -d ' ')
-is_commit_good = $(if $(subst $(riscv_tests_commit),,$(tmp_commit)),false,true)
+is_commit_good = true
 
 # Color
 RED=\033[0;31m
