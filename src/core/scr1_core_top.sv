@@ -67,6 +67,7 @@ module scr1_core_top (
     output  logic [`SCR1_IMEM_AWIDTH-1:0]           core2imem_addr_o,           // IMEM address
     input   logic [`SCR1_IMEM_DWIDTH-1:0]           imem2core_rdata_i,          // IMEM read data
     input   type_scr1_mem_resp_e                    imem2core_resp_i,           // IMEM response
+    output  type_scr1_exu_cmd_s                     idu2exu_cmd,                // IDU command (see scr1_riscv_isa_decoding.svh)
 
     // Data Memory Interface
     input   logic                                   dmem2core_req_ack_i,        // DMEM request acknowledge
@@ -298,6 +299,7 @@ scr1_pipe_top i_pipe_top (
     .imem2pipe_req_ack_i            (imem2core_req_ack_i    ),
     .imem2pipe_rdata_i              (imem2core_rdata_i      ),
     .imem2pipe_resp_i               (imem2core_resp_i       ),
+    .idu2exu_cmd                    (idu2exu_cmd            ),
 
     // Data memory interface
     .pipe2dmem_req_o                (core2dmem_req_o        ),

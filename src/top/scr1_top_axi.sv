@@ -173,6 +173,14 @@ logic [`SCR1_IMEM_AWIDTH-1:0]                       core_imem_addr;
 logic [`SCR1_IMEM_DWIDTH-1:0]                       core_imem_rdata;
 type_scr1_mem_resp_e                                core_imem_resp;
 
+// CACHE of INSTRUCTION
+logic                                               c2r_imem_req_ack;
+logic                                               c2r_imem_req;
+type_scr1_mem_cmd_e                                 c2r_imem_cmd;
+logic [`SCR1_IMEM_AWIDTH-1:0]                       c2r_imem_addr;
+logic [`SCR1_IMEM_DWIDTH-1:0]                       c2r_imem_rdata;
+type_scr1_mem_resp_e                                c2r_imem_resp;
+
 // Data memory interface from core to router
 logic                                               core_dmem_req_ack;
 logic                                               core_dmem_req;
@@ -293,6 +301,10 @@ assign axi_rst_n = sys_rst_n_o;
 assign axi_rst_n = rst_n_sync;
 `endif // SCR1_DBG_EN
 
+// edited by Leha Pavlov
+type_scr1_exu_cmd_s                         idu2exu_cmd;            // IDU command (see scr1_riscv_isa_decoding.svh)
+
+
 //-------------------------------------------------------------------------------
 // SCR1 core instance
 //-------------------------------------------------------------------------------
@@ -346,6 +358,7 @@ scr1_core_top i_core_top (
     .core2imem_addr_o           (core_imem_addr   ),
     .imem2core_rdata_i          (core_imem_rdata  ),
     .imem2core_resp_i           (core_imem_resp   ),
+    .idu2exu_cmd                (idu2exu_cmd      ),
 
     // Data memory interface
     .dmem2core_req_ack_i        (core_dmem_req_ack),
@@ -426,12 +439,19 @@ scr1_imem_router #(
     .clk            (clk              ),
 
     // Interface to core
-    .imem_req_ack   (core_imem_req_ack),
-    .imem_req       (core_imem_req    ),
-    .imem_cmd       (core_imem_cmd    ),
-    .imem_addr      (core_imem_addr   ),
-    .imem_rdata     (core_imem_rdata  ),
-    .imem_resp      (core_imem_resp   ),
+//     .imem_req_ack   (core_imem_req_ack),
+//      .imem_req       (core_imem_req    ),
+//    .imem_cmd       (core_imem_cmd    ),
+//     .imem_addr      (core_imem_addr   ),
+//      .imem_rdata     (core_imem_rdata  ),
+//      .imem_resp      (core_imem_resp   ),
+
+   .imem_req_ack   (c2r_imem_req_ack),
+    .imem_req       (c2r_imem_req    ),
+   .imem_cmd       (c2r_imem_cmd    ),
+    .imem_addr      (c2r_imem_addr   ),
+    .imem_rdata     (c2r_imem_rdata  ),
+    .imem_resp      (c2r_imem_resp   ),
 
     // Interface to AXI bridge
     .port0_req_ack  (axi_imem_req_ack ),
@@ -461,6 +481,33 @@ assign core_imem_rdata      = axi_imem_rdata;
 
 `endif // SCR1_IMEM_ROUTER_EN
 
+
+i_cache #(
+    .WIDTH_OF_I(32),
+    .COLUMNS(4),
+    .ROWS(256)
+) cache (
+    .clk(clk),
+    .rst_n(core_rst_n_local),
+
+    // Интерфейс для общения с ядром (Core)
+    .core_req(core_imem_req),
+    .core_addr(core_imem_addr),
+    .core_cmd(core_imem_addr),
+    .core_req_ack(core_imem_req_ack),
+    .core_rdata(core_imem_rdata),
+    .core_resp(core_imem_resp),
+
+    .idu2exu_cmd(idu2exu_cmd), // IDU command (see scr1_riscv_isa_decoding.svh)
+
+    // Интерфейс для общения с шиной (AXI Bridge)
+    .bus_req(c2r_imem_req),
+    .bus_addr(c2r_imem_addr),
+    .bus_cmd(c2r_imem_addr),
+    .bus_req_ack(c2r_imem_req_ack),
+    .bus_rdata(c2r_imem_rdata),
+    .bus_resp(c2r_imem_resp)
+);
 
 //-------------------------------------------------------------------------------
 // Data memory router

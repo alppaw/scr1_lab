@@ -36,6 +36,7 @@ module scr1_pipe_top (
     input   logic                                       imem2pipe_req_ack_i,        // IMEM request acknowledge
     input   logic [`SCR1_IMEM_DWIDTH-1:0]               imem2pipe_rdata_i,          // IMEM read data
     input   type_scr1_mem_resp_e                        imem2pipe_resp_i,           // IMEM response
+    output  type_scr1_exu_cmd_s                         idu2exu_cmd,           // IDU command (see scr1_riscv_isa_decoding.svh)
 
     // Data Memory Interface
     output  logic                                       pipe2dmem_req_o,            // DMEM request
@@ -142,7 +143,7 @@ logic                                       idu2ifu_rdy;            // IDU ready
 
 // IDU <-> EXU
 logic                                       idu2exu_req;            // IDU request
-type_scr1_exu_cmd_s                         idu2exu_cmd;            // IDU command (see scr1_riscv_isa_decoding.svh)
+// type_scr1_exu_cmd_s                         idu2exu_cmd;            // IDU command (see scr1_riscv_isa_decoding.svh)
 logic                                       idu2exu_use_rs1;        // Instruction uses rs1
 logic                                       idu2exu_use_rs2;        // Instruction uses rs2
 `ifndef SCR1_NO_EXE_STAGE
