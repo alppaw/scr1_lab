@@ -105,19 +105,16 @@ module d_cache #(
                     if (lat_cmd == SCR1_MEM_CMD_WR) begin
                         state <= WRITE_REQ;
                     end 
-                    // ЧТЕНИЕ:
                     else begin
                         if (!core_req) begin
                             state <= IDLE;
                         end else if (cache_hit) begin
-                            // Конвейерный Хит Чтения
                             lat_addr  <= core_addr;
                             lat_cmd   <= core_cmd;
                             lat_width <= core_width;
                             lat_wdata <= core_wdata;
                             state     <= CHECK;
                         end else begin
-                            // Промах Чтения
                             word_counter <= '0;
                             state        <= REFILL_REQ;
                         end
