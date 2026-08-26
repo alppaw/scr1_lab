@@ -486,14 +486,14 @@ i_cache #(
     .WIDTH_OF_I(32),
     .COLUMNS(4),
     .ROWS(256)
-) cache (
+) i_cache (
     .clk(clk),
     .rst_n(core_rst_n_local),
 
     // Интерфейс для общения с ядром (Core)
     .core_req(core_imem_req),
     .core_addr(core_imem_addr),
-    .core_cmd(core_imem_addr),
+    .core_cmd(core_imem_cmd),
     .core_req_ack(core_imem_req_ack),
     .core_rdata(core_imem_rdata),
     .core_resp(core_imem_resp),
@@ -503,7 +503,7 @@ i_cache #(
     // Интерфейс для общения с шиной (AXI Bridge)
     .bus_req(c2r_imem_req),
     .bus_addr(c2r_imem_addr),
-    .bus_cmd(c2r_imem_addr),
+    .bus_cmd(core_imem_cmd),
     .bus_req_ack(c2r_imem_req_ack),
     .bus_rdata(c2r_imem_rdata),
     .bus_resp(c2r_imem_resp)
@@ -538,6 +538,16 @@ scr1_dmem_router #(
     .dmem_wdata     (core_dmem_wdata     ),
     .dmem_rdata     (core_dmem_rdata     ),
     .dmem_resp      (core_dmem_resp      ),
+    
+    // // DATA CACHE
+    // .dmem_req_ack   (c2r_dmem_req_ack   ),
+    // .dmem_req       (c2r_dmem_req       ),
+    // .dmem_cmd       (c2r_dmem_cmd       ),
+    // .dmem_width     (c2r_dmem_width     ),
+    // .dmem_addr      (c2r_dmem_addr      ),
+    // .dmem_wdata     (c2r_dmem_wdata     ),
+    // .dmem_rdata     (c2r_dmem_rdata     ),
+    // .dmem_resp      (c2r_dmem_resp      ),
 
 `ifdef SCR1_TCM_EN
     // Interface to TCM
@@ -580,6 +590,37 @@ scr1_dmem_router #(
     .port0_rdata    (axi_dmem_rdata      ),
     .port0_resp     (axi_dmem_resp       )
 );
+
+
+// // DATA CACHE
+// d_cache #(
+//     .WIDTH_OF_I(32),
+//     .COLUMNS(4),
+//     .ROWS(256)
+// ) d_cache (
+//     .clk(clk),
+//     .rst_n(core_rst_n_local),
+
+//     // Интерфейс для общения с ядром (Core)
+//     .core_req(core_dmem_req),
+//     .core_addr(core_dmem_addr),
+//     .core_cmd(core_dmem_cmd),
+//     .core_width(core_dmem_width),
+//     .core_req_ack(core_dmem_req_ack),
+//     .core_wdata(core_dmem_wdata),
+//     .core_rdata(core_dmem_rdata),
+//     .core_resp(core_dmem_resp),
+
+//     // Интерфейс для общения с шиной (AXI Bridge)
+//     .bus_req(c2r_dmem_req),
+//     .bus_addr(c2r_dmem_addr),
+//     .bus_cmd(c2r_dmem_cmd),
+//     .bus_width(c2r_dmem_width),
+//     .bus_req_ack(c2r_dmem_req_ack),
+//     .bus_wdata(c2r_dmem_wdata),
+//     .bus_rdata(c2r_dmem_rdata),
+//     .bus_resp(c2r_dmem_resp)
+// );
 
 
 //-------------------------------------------------------------------------------

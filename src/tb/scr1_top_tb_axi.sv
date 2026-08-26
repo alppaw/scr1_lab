@@ -168,6 +168,17 @@ int unsigned                            tests_total;
 bit [1:0]                               rst_cnt;
 bit                                     rst_init;
 
+// int unsigned watchdog_cnt;
+
+// initial watchdog_cnt = 0;
+
+// always_ff @(posedge clk) begin
+//     watchdog_cnt <= watchdog_cnt + 1;
+//     if (watchdog_cnt > 20000) begin // подберите число под ваш тест
+//         $display("WATCHDOG: simulation did not finish in time, forcing $finish at cycle %0d", watchdog_cnt);
+//         $finish;
+//     end
+// end
 
 `ifdef VERILATOR
 function int identify_test (logic [255:0] testname);
