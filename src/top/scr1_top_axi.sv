@@ -191,6 +191,16 @@ logic [`SCR1_DMEM_DWIDTH-1:0]                       core_dmem_wdata;
 logic [`SCR1_DMEM_DWIDTH-1:0]                       core_dmem_rdata;
 type_scr1_mem_resp_e                                core_dmem_resp;
 
+// DATA CACHE
+logic                                               c2r_dmem_req_ack;
+logic                                               c2r_dmem_req;
+type_scr1_mem_cmd_e                                 c2r_dmem_cmd;
+type_scr1_mem_width_e                               c2r_dmem_width;
+logic [`SCR1_DMEM_AWIDTH-1:0]                       c2r_dmem_addr;
+logic [`SCR1_DMEM_DWIDTH-1:0]                       c2r_dmem_wdata;
+logic [`SCR1_DMEM_DWIDTH-1:0]                       c2r_dmem_rdata;
+type_scr1_mem_resp_e                                c2r_dmem_resp;
+
 // Instruction memory interface from router to AXI bridge
 logic                                               axi_imem_req_ack;
 logic                                               axi_imem_req;
@@ -439,27 +449,34 @@ scr1_imem_router #(
     .clk            (clk              ),
 
     // Interface to core
-//     .imem_req_ack   (core_imem_req_ack),
-//      .imem_req       (core_imem_req    ),
-//    .imem_cmd       (core_imem_cmd    ),
-//     .imem_addr      (core_imem_addr   ),
-//      .imem_rdata     (core_imem_rdata  ),
-//      .imem_resp      (core_imem_resp   ),
+    .imem_req_ack   (core_imem_req_ack),
+     .imem_req       (core_imem_req    ),
+   .imem_cmd       (core_imem_cmd    ),
+    .imem_addr      (core_imem_addr   ),
+     .imem_rdata     (core_imem_rdata  ),
+     .imem_resp      (core_imem_resp   ),
 
-   .imem_req_ack   (c2r_imem_req_ack),
-    .imem_req       (c2r_imem_req    ),
-   .imem_cmd       (c2r_imem_cmd    ),
-    .imem_addr      (c2r_imem_addr   ),
-    .imem_rdata     (c2r_imem_rdata  ),
-    .imem_resp      (c2r_imem_resp   ),
+//    .imem_req_ack   (c2r_imem_req_ack),
+//     .imem_req       (c2r_imem_req    ),
+//    .imem_cmd       (c2r_imem_cmd    ),
+//     .imem_addr      (c2r_imem_addr   ),
+//     .imem_rdata     (c2r_imem_rdata  ),
+//     .imem_resp      (c2r_imem_resp   ),
 
     // Interface to AXI bridge
-    .port0_req_ack  (axi_imem_req_ack ),
-    .port0_req      (axi_imem_req     ),
-    .port0_cmd      (axi_imem_cmd     ),
-    .port0_addr     (axi_imem_addr    ),
-    .port0_rdata    (axi_imem_rdata   ),
-    .port0_resp     (axi_imem_resp    ),
+    .port0_req_ack  (c2r_imem_req_ack ),
+    .port0_req      (c2r_imem_req     ),
+    .port0_cmd      (c2r_imem_cmd     ),
+    .port0_addr     (c2r_imem_addr    ),
+    .port0_rdata    (c2r_imem_rdata   ),
+    .port0_resp     (c2r_imem_resp    ),
+
+    // .port0_req_ack  (axi_imem_req_ack ),
+    // .port0_req      (axi_imem_req     ),
+    // .port0_cmd      (axi_imem_cmd     ),
+    // .port0_addr     (axi_imem_addr    ),
+    // .port0_rdata    (axi_imem_rdata   ),
+    // .port0_resp     (axi_imem_resp    ),
 
     // Interface to TCM
     .port1_req_ack  (tcm_imem_req_ack ),
@@ -491,22 +508,22 @@ i_cache #(
     .rst_n(core_rst_n_local),
 
     // Интерфейс для общения с ядром (Core)
-    .core_req(core_imem_req),
-    .core_addr(core_imem_addr),
-    .core_cmd(core_imem_cmd),
-    .core_req_ack(core_imem_req_ack),
-    .core_rdata(core_imem_rdata),
-    .core_resp(core_imem_resp),
+    .core_req       (c2r_imem_req),
+    .core_addr      (c2r_imem_addr),
+    .core_cmd       (c2r_imem_cmd),
+    .core_req_ack   (c2r_imem_req_ack),
+    .core_rdata     (c2r_imem_rdata),
+    .core_resp      (c2r_imem_resp),
 
     .idu2exu_cmd(idu2exu_cmd), // IDU command (see scr1_riscv_isa_decoding.svh)
 
     // Интерфейс для общения с шиной (AXI Bridge)
-    .bus_req(c2r_imem_req),
-    .bus_addr(c2r_imem_addr),
-    .bus_cmd(core_imem_cmd),
-    .bus_req_ack(c2r_imem_req_ack),
-    .bus_rdata(c2r_imem_rdata),
-    .bus_resp(c2r_imem_resp)
+    .bus_req        (axi_imem_req),
+    .bus_addr       (axi_imem_addr),
+    .bus_cmd        (axi_imem_cmd),
+    .bus_req_ack    (axi_imem_req_ack),
+    .bus_rdata      (axi_imem_rdata),
+    .bus_resp       (axi_imem_resp)
 );
 
 //-------------------------------------------------------------------------------
@@ -581,46 +598,55 @@ scr1_dmem_router #(
     .port2_resp     (timer_dmem_resp     ),
 
     // Interface to AXI bridge
-    .port0_req_ack  (axi_dmem_req_ack    ),
-    .port0_req      (axi_dmem_req        ),
-    .port0_cmd      (axi_dmem_cmd        ),
-    .port0_width    (axi_dmem_width      ),
-    .port0_addr     (axi_dmem_addr       ),
-    .port0_wdata    (axi_dmem_wdata      ),
-    .port0_rdata    (axi_dmem_rdata      ),
-    .port0_resp     (axi_dmem_resp       )
+    // .port0_req_ack  (axi_dmem_req_ack    ),
+    // .port0_req      (axi_dmem_req        ),
+    // .port0_cmd      (axi_dmem_cmd        ),
+    // .port0_width    (axi_dmem_width      ),
+    // .port0_addr     (axi_dmem_addr       ),
+    // .port0_wdata    (axi_dmem_wdata      ),
+    // .port0_rdata    (axi_dmem_rdata      ),
+    // .port0_resp     (axi_dmem_resp       )
+
+    .port0_req_ack  (c2r_dmem_req_ack    ),
+    .port0_req      (c2r_dmem_req        ),
+    .port0_cmd      (c2r_dmem_cmd        ),
+    .port0_width    (c2r_dmem_width      ),
+    .port0_addr     (c2r_dmem_addr       ),
+    .port0_wdata    (c2r_dmem_wdata      ),
+    .port0_rdata    (c2r_dmem_rdata      ),
+    .port0_resp     (c2r_dmem_resp       )
 );
 
 
-// // DATA CACHE
-// d_cache #(
-//     .WIDTH_OF_I(32),
-//     .COLUMNS(4),
-//     .ROWS(256)
-// ) d_cache (
-//     .clk(clk),
-//     .rst_n(core_rst_n_local),
+// DATA CACHE
+d_cache #(
+    .WIDTH_OF_D(32),
+    .COLUMNS(4),
+    .ROWS(256)
+) d_cache (
+    .clk(clk),
+    .rst_n(core_rst_n_local),
 
-//     // Интерфейс для общения с ядром (Core)
-//     .core_req(core_dmem_req),
-//     .core_addr(core_dmem_addr),
-//     .core_cmd(core_dmem_cmd),
-//     .core_width(core_dmem_width),
-//     .core_req_ack(core_dmem_req_ack),
-//     .core_wdata(core_dmem_wdata),
-//     .core_rdata(core_dmem_rdata),
-//     .core_resp(core_dmem_resp),
+    // Интерфейс для общения с ядром (Core)
+    .core_req       (c2r_dmem_req),
+    .core_addr      (c2r_dmem_addr),
+    .core_cmd       (c2r_dmem_cmd),
+    .core_width     (c2r_dmem_width),
+    .core_req_ack   (c2r_dmem_req_ack),
+    .core_wdata     (c2r_dmem_wdata),
+    .core_rdata     (c2r_dmem_rdata),
+    .core_resp      (c2r_dmem_resp),
 
-//     // Интерфейс для общения с шиной (AXI Bridge)
-//     .bus_req(c2r_dmem_req),
-//     .bus_addr(c2r_dmem_addr),
-//     .bus_cmd(c2r_dmem_cmd),
-//     .bus_width(c2r_dmem_width),
-//     .bus_req_ack(c2r_dmem_req_ack),
-//     .bus_wdata(c2r_dmem_wdata),
-//     .bus_rdata(c2r_dmem_rdata),
-//     .bus_resp(c2r_dmem_resp)
-// );
+    // Интерфейс для общения с шиной (AXI Bridge)
+    .bus_req        (axi_dmem_req),
+    .bus_addr       (axi_dmem_addr),
+    .bus_cmd        (axi_dmem_cmd),
+    .bus_width      (axi_dmem_width),
+    .bus_req_ack    (axi_dmem_req_ack),
+    .bus_wdata      (axi_dmem_wdata),
+    .bus_rdata      (axi_dmem_rdata),
+    .bus_resp       (axi_dmem_resp)
+);
 
 
 //-------------------------------------------------------------------------------

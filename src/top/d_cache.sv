@@ -1,198 +1,269 @@
 `include "scr1_memif.svh"
 `include "scr1_arch_description.svh"
 
+// Blocking direct-mapped cache for the native SCR1 memory interface.
+// Policy: read-allocate, write-through, no-write-allocate, one request at a time.
 module d_cache #(
-    parameter WIDTH_OF_D = 32,
-    parameter COLUMNS    = 4,
-    parameter ROWS       = 256
+    parameter int unsigned WIDTH_OF_D = 32,
+    parameter int unsigned COLUMNS    = 4,
+    parameter int unsigned ROWS       = 256
 ) (
-    input   logic                          clk,
-    input   logic                          rst_n,
+    input  logic                         clk,
+    input  logic                         rst_n,
 
-    // Интерфейс Ядра (Core)
-    input   logic                          core_req,
-    input   logic [WIDTH_OF_D-1:0]         core_addr,
-    input   type_scr1_mem_cmd_e            core_cmd,     
-    input   type_scr1_mem_width_e          core_width,   
-    input   logic [WIDTH_OF_D-1:0]         core_wdata,   
-    output  logic                          core_req_ack,
-    output  logic [WIDTH_OF_D-1:0]         core_rdata,
-    output  type_scr1_mem_resp_e           core_resp,
+    // Interface from scr1_dmem_router
+    input  logic                         core_req,
+    input  logic [WIDTH_OF_D-1:0]        core_addr,
+    input  type_scr1_mem_cmd_e           core_cmd,
+    input  type_scr1_mem_width_e         core_width,
+    input  logic [WIDTH_OF_D-1:0]        core_wdata,
+    output logic                         core_req_ack,
+    output logic [WIDTH_OF_D-1:0]        core_rdata,
+    output type_scr1_mem_resp_e          core_resp,
 
-    // Интерфейс Шины / Роутера (Bus)
-    output  logic                          bus_req,
-    output  logic [WIDTH_OF_D-1:0]         bus_addr,
-    output  type_scr1_mem_cmd_e            bus_cmd,
-    output  type_scr1_mem_width_e          bus_width,
-    output  logic [WIDTH_OF_D-1:0]         bus_wdata,
-    input   logic                          bus_req_ack,
-    input   logic [WIDTH_OF_D-1:0]         bus_rdata,
-    input   type_scr1_mem_resp_e           bus_resp
+    // Interface to scr1_mem_axi
+    output logic                         bus_req,
+    output logic [WIDTH_OF_D-1:0]        bus_addr,
+    output type_scr1_mem_cmd_e           bus_cmd,
+    output type_scr1_mem_width_e         bus_width,
+    output logic [WIDTH_OF_D-1:0]        bus_wdata,
+    input  logic                         bus_req_ack,
+    input  logic [WIDTH_OF_D-1:0]        bus_rdata,
+    input  type_scr1_mem_resp_e          bus_resp
 );
 
-    localparam BYTE_OFFSET = $clog2(WIDTH_OF_D/8);
-    localparam WORD_OFFSET = $clog2(COLUMNS);
-    localparam INDEX       = $clog2(ROWS);
-    localparam TAG         = WIDTH_OF_D - INDEX - WORD_OFFSET - BYTE_OFFSET;
+localparam int unsigned BYTES_PER_WORD = WIDTH_OF_D / 8;
+localparam int unsigned BYTE_OFF_BITS  = $clog2(BYTES_PER_WORD);
+localparam int unsigned WORD_OFF_BITS  = $clog2(COLUMNS);
+localparam int unsigned INDEX_BITS     = $clog2(ROWS);
+localparam int unsigned LINE_OFF_BITS  = BYTE_OFF_BITS + WORD_OFF_BITS;
+localparam int unsigned TAG_BITS       = WIDTH_OF_D - INDEX_BITS - LINE_OFF_BITS;
 
-    wire [INDEX-1:0] req_index = core_addr[BYTE_OFFSET+WORD_OFFSET +: INDEX];
+typedef enum logic [2:0] {
+    ST_IDLE,
+    ST_LOOKUP,
+    ST_BUS_REQ,
+    ST_BUS_WAIT,
+    ST_RESP
+} state_t;
 
-    (* ram_style = "block" *) logic [WIDTH_OF_D*COLUMNS-1:0] cache_data [0:ROWS-1];
-    (* ram_style = "block" *) logic [TAG-1:0]                cache_tags [0:ROWS-1];
-    logic                                                    cache_valid[0:ROWS-1];
+state_t state;
 
-    // Защелкнутые сигналы текущей операции
-    logic [WIDTH_OF_D-1:0]        lat_addr; 
-    type_scr1_mem_cmd_e           lat_cmd;
-    type_scr1_mem_width_e         lat_width;
-    logic [WIDTH_OF_D-1:0]        lat_wdata;
+logic [WIDTH_OF_D-1:0] cache_data  [0:ROWS-1][0:COLUMNS-1];
+logic [TAG_BITS-1:0]   cache_tag   [0:ROWS-1];
+logic                  cache_valid [0:ROWS-1];
 
-    wire [TAG-1:0]         lat_tag    = lat_addr[WIDTH_OF_D-1 -: TAG];
-    wire [INDEX-1:0]       lat_index  = lat_addr[BYTE_OFFSET+WORD_OFFSET +: INDEX];
-    wire [WORD_OFFSET-1:0] lat_offset = lat_addr[BYTE_OFFSET +: WORD_OFFSET];
-    wire [1:0]             lat_byte   = lat_addr[1:0];
+logic [WIDTH_OF_D-1:0] req_addr_q;
+logic [WIDTH_OF_D-1:0] req_wdata_q;
+type_scr1_mem_cmd_e    req_cmd_q;
+type_scr1_mem_width_e  req_width_q;
 
-    logic [WIDTH_OF_D*COLUMNS-1:0] line_data_read;
-    logic [TAG-1:0]                tag_read;
+logic [WORD_OFF_BITS-1:0] refill_word_q;
+logic [WIDTH_OF_D-1:0]   refill_result_q;
+logic [WIDTH_OF_D-1:0]   response_data_q;
+type_scr1_mem_resp_e     response_q;
 
-    wire accept_new_req = (state == IDLE) || 
-                          (state == CHECK && cache_hit && lat_cmd == SCR1_MEM_CMD_RD) || 
-                          (state == WRITE_DONE);
+wire [WORD_OFF_BITS-1:0] req_word =
+    req_addr_q[BYTE_OFF_BITS +: WORD_OFF_BITS];
 
-    wire [INDEX-1:0] bram_read_idx = (accept_new_req && core_req) ? req_index : lat_index;
+wire [INDEX_BITS-1:0] req_index =
+    req_addr_q[LINE_OFF_BITS +: INDEX_BITS];
 
-    always_ff @(posedge clk) begin
-        line_data_read <= cache_data[bram_read_idx];
-        tag_read       <= cache_tags[bram_read_idx];
+wire [TAG_BITS-1:0] req_tag =
+    req_addr_q[WIDTH_OF_D-1 -: TAG_BITS];
+
+wire req_hit =
+    cache_valid[req_index] && (cache_tag[req_index] == req_tag);
+
+function automatic logic [WIDTH_OF_D-1:0] load_align(
+    input logic [WIDTH_OF_D-1:0] word,
+    input logic [BYTE_OFF_BITS-1:0] byte_offset
+);
+    load_align = word >> (8 * byte_offset);
+endfunction
+
+function automatic logic [WIDTH_OF_D-1:0] store_merge(
+    input logic [WIDTH_OF_D-1:0] old_word,
+    input logic [WIDTH_OF_D-1:0] new_data,
+    input type_scr1_mem_width_e  width,
+    input logic [BYTE_OFF_BITS-1:0] byte_offset
+);
+    logic [WIDTH_OF_D-1:0] result;
+
+    begin
+        result = old_word;
+
+        case (width)
+            SCR1_MEM_WIDTH_BYTE:
+                result[byte_offset*8 +: 8] = new_data[7:0];
+
+            SCR1_MEM_WIDTH_HWORD:
+                result[byte_offset[1]*16 +: 16] = new_data[15:0];
+
+            SCR1_MEM_WIDTH_WORD:
+                result = new_data;
+
+            default:
+                result = old_word;
+        endcase
+
+        store_merge = result;
     end
+endfunction
 
-    wire valid_read = cache_valid[lat_index];
-    wire cache_hit  = valid_read && (tag_read == lat_tag);
+always_comb begin
+    core_req_ack = (state == ST_IDLE);
+    core_rdata   = response_data_q;
+    core_resp    = (state == ST_RESP)
+                 ? response_q
+                 : SCR1_MEM_RESP_NOTRDY;
 
-    typedef enum logic [2:0] {
-        IDLE, CHECK, 
-        REFILL_REQ, REFILL_WAIT, REFILL_DONE, 
-        WRITE_REQ, WRITE_WAIT, WRITE_DONE
-    } state_t;
-    state_t state;
+    bus_req      = (state == ST_BUS_REQ);
+    bus_cmd      = req_cmd_q;
+    bus_width    = req_width_q;
+    bus_wdata    = req_wdata_q;
+    bus_addr     = req_addr_q;
 
-    logic [WORD_OFFSET-1:0]        word_counter;
-    logic [WIDTH_OF_D-1:0]        words_buf [0:COLUMNS-2];
+    // Refill: always read a complete aligned 32-bit word.
+    if (req_cmd_q == SCR1_MEM_CMD_RD) begin
+        bus_cmd   = SCR1_MEM_CMD_RD;
+        bus_width = SCR1_MEM_WIDTH_WORD;
+        bus_wdata = '0;
+        bus_addr  = {
+            req_addr_q[WIDTH_OF_D-1:LINE_OFF_BITS],
+            refill_word_q,
+            {BYTE_OFF_BITS{1'b0}}
+        };
+    end
+end
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (~rst_n) begin
-            state        <= IDLE;
-            word_counter <= '0;
-            lat_addr     <= '0;
-            lat_cmd      <= SCR1_MEM_CMD_RD;
-            lat_width    <= SCR1_MEM_WIDTH_WORD;
-            lat_wdata    <= '0;
-            for (int i = 0; i < ROWS; i++) cache_valid[i] <= 1'b0;
-        end else begin
-            case (state)
-                IDLE: begin
-                    word_counter <= '0;
-                    if (core_req) begin
-                        lat_addr  <= core_addr;
-                        lat_cmd   <= core_cmd;
-                        lat_width <= core_width;
-                        lat_wdata <= core_wdata;
-                        state     <= CHECK;
-                    end
-                end
+always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
+    integer i;
 
-                CHECK: begin
-                    if (lat_cmd == SCR1_MEM_CMD_WR) begin
-                        state <= WRITE_REQ;
-                    end 
-                    else begin
-                        if (!core_req) begin
-                            state <= IDLE;
-                        end else if (cache_hit) begin
-                            lat_addr  <= core_addr;
-                            lat_cmd   <= core_cmd;
-                            lat_width <= core_width;
-                            lat_wdata <= core_wdata;
-                            state     <= CHECK;
-                        end else begin
-                            word_counter <= '0;
-                            state        <= REFILL_REQ;
-                        end
-                    end
-                end
+    if (!rst_n) begin
+        state           <= ST_IDLE;
+        req_addr_q      <= '0;
+        req_wdata_q     <= '0;
+        req_cmd_q       <= SCR1_MEM_CMD_RD;
+        req_width_q     <= SCR1_MEM_WIDTH_WORD;
+        refill_word_q   <= '0;
+        refill_result_q <= '0;
+        response_data_q <= '0;
+        response_q      <= SCR1_MEM_RESP_NOTRDY;
 
-                REFILL_REQ: begin
-                    if (bus_req_ack) state <= REFILL_WAIT;
-                end
-
-                REFILL_WAIT: begin
-                    if (bus_resp == SCR1_MEM_RESP_RDY_OK) begin
-                        if (word_counter == COLUMNS-1) begin
-                            cache_data[lat_index]  <= {bus_rdata, words_buf[2], words_buf[1], words_buf[0]};
-                            cache_tags[lat_index]  <= lat_tag;
-                            cache_valid[lat_index] <= 1'b1;
-                            state <= REFILL_DONE;
-                        end else begin
-                            words_buf[word_counter] <= bus_rdata;
-                            word_counter <= word_counter + 1'b1;
-                            state        <= REFILL_REQ;
-                        end
-                    end else if (bus_resp == SCR1_MEM_RESP_RDY_ER) begin
-                        state <= IDLE;
-                    end
-                end
-
-                REFILL_DONE: state <= CHECK;
-
-                WRITE_REQ: begin
-                    if (bus_req_ack) state <= WRITE_WAIT;
-                end
-
-                WRITE_WAIT: begin
-                    if (bus_resp == SCR1_MEM_RESP_RDY_OK || bus_resp == SCR1_MEM_RESP_RDY_ER) begin
-                        if (cache_valid[lat_index] && (cache_tags[lat_index] == lat_tag)) begin
-                            cache_valid[lat_index] <= 1'b0;
-                        end
-                        state <= WRITE_DONE;
-                    end
-                end
-
-                WRITE_DONE: begin
-                    if (core_req) begin
-                        lat_addr  <= core_addr;
-                        lat_cmd   <= core_cmd;
-                        lat_width <= core_width;
-                        lat_wdata <= core_wdata;
-                        state     <= CHECK;
-                    end else begin
-                        state     <= IDLE;
-                    end
-                end
-
-                default: state <= IDLE;
-            endcase
+        for (i = 0; i < ROWS; i = i + 1) begin
+            cache_valid[i] <= 1'b0;
         end
+    end else begin
+        case (state)
+
+            ST_IDLE: begin
+                response_q <= SCR1_MEM_RESP_NOTRDY;
+
+                if (core_req) begin
+                    req_addr_q  <= core_addr;
+                    req_wdata_q <= core_wdata;
+                    req_cmd_q   <= core_cmd;
+                    req_width_q <= core_width;
+                    state       <= ST_LOOKUP;
+                end
+            end
+
+            ST_LOOKUP: begin
+                if (req_cmd_q == SCR1_MEM_CMD_RD) begin
+
+                    if (req_hit) begin
+                        response_data_q <= load_align(
+                            cache_data[req_index][req_word],
+                            req_addr_q[BYTE_OFF_BITS-1:0]
+                        );
+                        response_q <= SCR1_MEM_RESP_RDY_OK;
+                        state      <= ST_RESP;
+
+                    end else begin
+                        // Prevent a partially loaded line becoming valid.
+                        cache_valid[req_index] <= 1'b0;
+                        refill_word_q          <= '0;
+                        refill_result_q        <= '0;
+                        state                  <= ST_BUS_REQ;
+                    end
+
+                end else begin
+                    // Write-through. No line refill on write miss.
+                    state <= ST_BUS_REQ;
+                end
+            end
+
+            ST_BUS_REQ: begin
+                if (bus_req_ack) begin
+                    state <= ST_BUS_WAIT;
+                end
+            end
+
+            ST_BUS_WAIT: begin
+                if (bus_resp == SCR1_MEM_RESP_RDY_ER) begin
+                    response_data_q <= '0;
+                    response_q      <= SCR1_MEM_RESP_RDY_ER;
+                    state           <= ST_RESP;
+
+                end else if (bus_resp == SCR1_MEM_RESP_RDY_OK) begin
+
+                    if (req_cmd_q == SCR1_MEM_CMD_WR) begin
+                        // Update cached data only after successful AXI write.
+                        if (req_hit) begin
+                            cache_data[req_index][req_word] <= store_merge(
+                                cache_data[req_index][req_word],
+                                req_wdata_q,
+                                req_width_q,
+                                req_addr_q[BYTE_OFF_BITS-1:0]
+                            );
+                        end
+
+                        response_data_q <= '0;
+                        response_q      <= SCR1_MEM_RESP_RDY_OK;
+                        state           <= ST_RESP;
+
+                    end else begin
+                        cache_data[req_index][refill_word_q] <= bus_rdata;
+
+                        if (refill_word_q == req_word) begin
+                            refill_result_q <= load_align(
+                                bus_rdata,
+                                req_addr_q[BYTE_OFF_BITS-1:0]
+                            );
+                        end
+
+                        if (refill_word_q == COLUMNS - 1) begin
+                            cache_tag[req_index]   <= req_tag;
+                            cache_valid[req_index] <= 1'b1;
+
+                            response_data_q <= (refill_word_q == req_word)
+                                ? load_align(
+                                    bus_rdata,
+                                    req_addr_q[BYTE_OFF_BITS-1:0]
+                                )
+                                : refill_result_q;
+
+                            response_q <= SCR1_MEM_RESP_RDY_OK;
+                            state      <= ST_RESP;
+
+                        end else begin
+                            refill_word_q <= refill_word_q + 1'b1;
+                            state         <= ST_BUS_REQ;
+                        end
+                    end
+                end
+            end
+
+            ST_RESP: begin
+                state <= ST_IDLE;
+            end
+
+            default: begin
+                state <= ST_IDLE;
+            end
+        endcase
     end
+end
 
-    
-    logic [WIDTH_OF_D-1:0] full_word_read;
-    assign full_word_read = line_data_read[lat_offset*WIDTH_OF_D +: WIDTH_OF_D];
-
-    assign core_rdata = full_word_read >> (lat_byte * 8);
-
-    assign core_req_ack = accept_new_req;
-
-    assign core_resp = (state == CHECK && cache_hit && lat_cmd == SCR1_MEM_CMD_RD) ? SCR1_MEM_RESP_RDY_OK :
-                       (state == WRITE_DONE)                                        ? SCR1_MEM_RESP_RDY_OK : 
-                                                                                      SCR1_MEM_RESP_NOTRDY;
-
-    
-    wire is_write = (state == WRITE_REQ) || (state == WRITE_WAIT);
-
-    assign bus_req   = (state == REFILL_REQ) || (state == WRITE_REQ);
-    assign bus_cmd   = is_write ? SCR1_MEM_CMD_WR : SCR1_MEM_CMD_RD;
-    assign bus_width = is_write ? lat_width : SCR1_MEM_WIDTH_WORD;
-    assign bus_wdata = lat_wdata;
-    assign bus_addr  = is_write ? lat_addr : {lat_tag, lat_index, word_counter, {BYTE_OFFSET{1'b0}}};
-
-endmodule
+endmodule : d_cache
