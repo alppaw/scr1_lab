@@ -1,8 +1,10 @@
 `include "scr1_memif.svh"
 `include "scr1_arch_description.svh"
 
-// Blocking direct-mapped cache for the native SCR1 memory interface.
-// Policy: read-allocate, write-through, no-write-allocate, one request at a time.
+// Blocking direct-mapped SCR1 data cache.
+// Read allocate, write through, no write allocate, one outstanding request.
+// cache_data_ram is intentionally coded as a synchronous, single-port RAM so
+// that Xilinx Vivado can infer RAMB primitives.
 module d_cache #(
     parameter int unsigned WIDTH_OF_D = 32,
     parameter int unsigned COLUMNS    = 4,
@@ -11,7 +13,6 @@ module d_cache #(
     input  logic                         clk,
     input  logic                         rst_n,
 
-    // Interface from scr1_dmem_router
     input  logic                         core_req,
     input  logic [WIDTH_OF_D-1:0]        core_addr,
     input  type_scr1_mem_cmd_e           core_cmd,
@@ -21,7 +22,6 @@ module d_cache #(
     output logic [WIDTH_OF_D-1:0]        core_rdata,
     output type_scr1_mem_resp_e          core_resp,
 
-    // Interface to scr1_mem_axi
     output logic                         bus_req,
     output logic [WIDTH_OF_D-1:0]        bus_addr,
     output type_scr1_mem_cmd_e           bus_cmd,
@@ -38,6 +38,7 @@ localparam int unsigned WORD_OFF_BITS  = $clog2(COLUMNS);
 localparam int unsigned INDEX_BITS     = $clog2(ROWS);
 localparam int unsigned LINE_OFF_BITS  = BYTE_OFF_BITS + WORD_OFF_BITS;
 localparam int unsigned TAG_BITS       = WIDTH_OF_D - INDEX_BITS - LINE_OFF_BITS;
+localparam int unsigned LINE_WIDTH     = WIDTH_OF_D * COLUMNS;
 
 typedef enum logic [2:0] {
     ST_IDLE,
@@ -49,9 +50,22 @@ typedef enum logic [2:0] {
 
 state_t state;
 
-logic [WIDTH_OF_D-1:0] cache_data  [0:ROWS-1][0:COLUMNS-1];
-logic [TAG_BITS-1:0]   cache_tag   [0:ROWS-1];
-logic                  cache_valid [0:ROWS-1];
+// 256 × 128 бит при стандартных параметрах.
+// Не добавляй reset к этому массиву: иначе Vivado не выведет BRAM.
+(* ram_style = "block" *)
+logic [LINE_WIDTH-1:0] cache_data_ram [0:ROWS-1];
+
+logic [LINE_WIDTH-1:0] cache_data_rdata;
+logic [INDEX_BITS-1:0] cache_data_raddr;
+logic [INDEX_BITS-1:0] cache_data_waddr;
+logic [LINE_WIDTH-1:0] cache_data_wdata;
+logic                  cache_data_we;
+
+// Теги небольшие, поэтому пусть Vivado реализует их в distributed RAM.
+(* ram_style = "distributed" *)
+logic [TAG_BITS-1:0] cache_tag_ram [0:ROWS-1];
+
+logic cache_valid [0:ROWS-1];
 
 logic [WIDTH_OF_D-1:0] req_addr_q;
 logic [WIDTH_OF_D-1:0] req_wdata_q;
@@ -59,9 +73,9 @@ type_scr1_mem_cmd_e    req_cmd_q;
 type_scr1_mem_width_e  req_width_q;
 
 logic [WORD_OFF_BITS-1:0] refill_word_q;
-logic [WIDTH_OF_D-1:0]   refill_result_q;
-logic [WIDTH_OF_D-1:0]   response_data_q;
-type_scr1_mem_resp_e     response_q;
+logic [LINE_WIDTH-1:0]    refill_line_q;
+logic [WIDTH_OF_D-1:0]    response_data_q;
+type_scr1_mem_resp_e      response_q;
 
 wire [WORD_OFF_BITS-1:0] req_word =
     req_addr_q[BYTE_OFF_BITS +: WORD_OFF_BITS];
@@ -73,7 +87,29 @@ wire [TAG_BITS-1:0] req_tag =
     req_addr_q[WIDTH_OF_D-1 -: TAG_BITS];
 
 wire req_hit =
-    cache_valid[req_index] && (cache_tag[req_index] == req_tag);
+    cache_valid[req_index] &&
+    (cache_tag_ram[req_index] == req_tag);
+
+function automatic logic [WIDTH_OF_D-1:0] line_get_word(
+    input logic [LINE_WIDTH-1:0] line,
+    input logic [WORD_OFF_BITS-1:0] word_number
+);
+    line_get_word = line[word_number*WIDTH_OF_D +: WIDTH_OF_D];
+endfunction
+
+function automatic logic [LINE_WIDTH-1:0] line_put_word(
+    input logic [LINE_WIDTH-1:0] line,
+    input logic [WORD_OFF_BITS-1:0] word_number,
+    input logic [WIDTH_OF_D-1:0] word_data
+);
+    logic [LINE_WIDTH-1:0] result;
+
+    begin
+        result = line;
+        result[word_number*WIDTH_OF_D +: WIDTH_OF_D] = word_data;
+        line_put_word = result;
+    end
+endfunction
 
 function automatic logic [WIDTH_OF_D-1:0] load_align(
     input logic [WIDTH_OF_D-1:0] word,
@@ -88,52 +124,107 @@ function automatic logic [WIDTH_OF_D-1:0] store_merge(
     input type_scr1_mem_width_e  width,
     input logic [BYTE_OFF_BITS-1:0] byte_offset
 );
-    logic [WIDTH_OF_D-1:0] result;
+    logic [WIDTH_OF_D-1:0] mask;
+    logic [WIDTH_OF_D-1:0] shifted_data;
 
     begin
-        result = old_word;
-
         case (width)
             SCR1_MEM_WIDTH_BYTE:
-                result[byte_offset*8 +: 8] = new_data[7:0];
+                mask = 32'h000000ff << (8 * byte_offset);
 
             SCR1_MEM_WIDTH_HWORD:
-                result[byte_offset[1]*16 +: 16] = new_data[15:0];
+                mask = 32'h0000ffff << (8 * byte_offset);
 
             SCR1_MEM_WIDTH_WORD:
-                result = new_data;
+                mask = 32'hffffffff;
 
             default:
-                result = old_word;
+                mask = '0;
         endcase
 
-        store_merge = result;
+        shifted_data = new_data << (8 * byte_offset);
+
+        store_merge = (old_word & ~mask) | (shifted_data & mask);
     end
 endfunction
+
+wire [LINE_WIDTH-1:0] refill_line_with_bus_word =
+    line_put_word(refill_line_q, refill_word_q, bus_rdata);
+
+wire [WIDTH_OF_D-1:0] store_merged_word =
+    store_merge(
+        line_get_word(cache_data_rdata, req_word),
+        req_wdata_q,
+        req_width_q,
+        req_addr_q[BYTE_OFF_BITS-1:0]
+    );
+
+// Единственное место чтения и записи data RAM.
+always_ff @(posedge clk) begin
+    if (cache_data_we) begin
+        cache_data_ram[cache_data_waddr] <= cache_data_wdata;
+    end
+
+    cache_data_rdata <= cache_data_ram[cache_data_raddr];
+end
+
+always_comb begin
+    // При принятии core-запроса адрес подаётся на BRAM.
+    // В ST_LOOKUP данные уже будут на cache_data_rdata.
+    cache_data_raddr = (state == ST_IDLE)
+                     ? core_addr[LINE_OFF_BITS +: INDEX_BITS]
+                     : req_index;
+
+    cache_data_we    = 1'b0;
+    cache_data_waddr = req_index;
+    cache_data_wdata = refill_line_with_bus_word;
+
+    if ((state == ST_BUS_WAIT) &&
+        (bus_resp == SCR1_MEM_RESP_RDY_OK)) begin
+
+        // После получения всех 4 слов строка записывается в BRAM одним разом.
+        if ((req_cmd_q == SCR1_MEM_CMD_RD) &&
+            (refill_word_q == COLUMNS - 1)) begin
+
+            cache_data_we    = 1'b1;
+            cache_data_wdata = refill_line_with_bus_word;
+
+        // Write-hit: обновляется вся строка за одну операцию записи.
+        end else if ((req_cmd_q == SCR1_MEM_CMD_WR) && req_hit) begin
+            cache_data_we    = 1'b1;
+            cache_data_wdata = line_put_word(
+                cache_data_rdata,
+                req_word,
+                store_merged_word
+            );
+        end
+    end
+end
 
 always_comb begin
     core_req_ack = (state == ST_IDLE);
     core_rdata   = response_data_q;
-    core_resp    = (state == ST_RESP)
-                 ? response_q
-                 : SCR1_MEM_RESP_NOTRDY;
 
-    bus_req      = (state == ST_BUS_REQ);
-    bus_cmd      = req_cmd_q;
-    bus_width    = req_width_q;
-    bus_wdata    = req_wdata_q;
-    bus_addr     = req_addr_q;
+    core_resp = (state == ST_RESP)
+              ? response_q
+              : SCR1_MEM_RESP_NOTRDY;
 
-    // Refill: always read a complete aligned 32-bit word.
+    bus_req   = (state == ST_BUS_REQ);
+    bus_cmd   = req_cmd_q;
+    bus_width = req_width_q;
+    bus_addr  = req_addr_q;
+    bus_wdata = req_wdata_q;
+
+    // Refill: четыре выровненных 32-битных чтения.
     if (req_cmd_q == SCR1_MEM_CMD_RD) begin
         bus_cmd   = SCR1_MEM_CMD_RD;
         bus_width = SCR1_MEM_WIDTH_WORD;
-        bus_wdata = '0;
         bus_addr  = {
             req_addr_q[WIDTH_OF_D-1:LINE_OFF_BITS],
             refill_word_q,
             {BYTE_OFF_BITS{1'b0}}
         };
+        bus_wdata = '0;
     end
 end
 
@@ -147,13 +238,15 @@ always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
         req_cmd_q       <= SCR1_MEM_CMD_RD;
         req_width_q     <= SCR1_MEM_WIDTH_WORD;
         refill_word_q   <= '0;
-        refill_result_q <= '0;
+        refill_line_q   <= '0;
         response_data_q <= '0;
         response_q      <= SCR1_MEM_RESP_NOTRDY;
 
+        // Сбрасываются только valid-биты.
         for (i = 0; i < ROWS; i = i + 1) begin
             cache_valid[i] <= 1'b0;
         end
+
     end else begin
         case (state)
 
@@ -174,22 +267,21 @@ always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
 
                     if (req_hit) begin
                         response_data_q <= load_align(
-                            cache_data[req_index][req_word],
+                            line_get_word(cache_data_rdata, req_word),
                             req_addr_q[BYTE_OFF_BITS-1:0]
                         );
                         response_q <= SCR1_MEM_RESP_RDY_OK;
                         state      <= ST_RESP;
 
                     end else begin
-                        // Prevent a partially loaded line becoming valid.
                         cache_valid[req_index] <= 1'b0;
                         refill_word_q          <= '0;
-                        refill_result_q        <= '0;
+                        refill_line_q          <= '0;
                         state                  <= ST_BUS_REQ;
                     end
 
                 end else begin
-                    // Write-through. No line refill on write miss.
+                    // Write-through, no-write-allocate.
                     state <= ST_BUS_REQ;
                 end
             end
@@ -209,40 +301,24 @@ always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
                 end else if (bus_resp == SCR1_MEM_RESP_RDY_OK) begin
 
                     if (req_cmd_q == SCR1_MEM_CMD_WR) begin
-                        // Update cached data only after successful AXI write.
-                        if (req_hit) begin
-                            cache_data[req_index][req_word] <= store_merge(
-                                cache_data[req_index][req_word],
-                                req_wdata_q,
-                                req_width_q,
-                                req_addr_q[BYTE_OFF_BITS-1:0]
-                            );
-                        end
-
                         response_data_q <= '0;
                         response_q      <= SCR1_MEM_RESP_RDY_OK;
                         state           <= ST_RESP;
 
                     end else begin
-                        cache_data[req_index][refill_word_q] <= bus_rdata;
-
-                        if (refill_word_q == req_word) begin
-                            refill_result_q <= load_align(
-                                bus_rdata,
-                                req_addr_q[BYTE_OFF_BITS-1:0]
-                            );
-                        end
+                        refill_line_q <= refill_line_with_bus_word;
 
                         if (refill_word_q == COLUMNS - 1) begin
-                            cache_tag[req_index]   <= req_tag;
-                            cache_valid[req_index] <= 1'b1;
+                            cache_tag_ram[req_index] <= req_tag;
+                            cache_valid[req_index]   <= 1'b1;
 
-                            response_data_q <= (refill_word_q == req_word)
-                                ? load_align(
-                                    bus_rdata,
-                                    req_addr_q[BYTE_OFF_BITS-1:0]
-                                )
-                                : refill_result_q;
+                            response_data_q <= load_align(
+                                line_get_word(
+                                    refill_line_with_bus_word,
+                                    req_word
+                                ),
+                                req_addr_q[BYTE_OFF_BITS-1:0]
+                            );
 
                             response_q <= SCR1_MEM_RESP_RDY_OK;
                             state      <= ST_RESP;
