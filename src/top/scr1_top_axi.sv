@@ -620,9 +620,11 @@ scr1_dmem_router #(
 
 // DATA CACHE
 d_cache #(
-    .WIDTH_OF_D(32),
-    .COLUMNS(4),
-    .ROWS(256)
+    .WIDTH_OF_D              (32),
+    .COLUMNS                 (4),
+    .ROWS                    (256),
+    .CACHEABLE_ADDR_MASK     (32'hF800_0000),
+    .CACHEABLE_ADDR_PATTERN  (32'h0000_0000)
 ) d_cache (
     .clk(clk),
     .rst_n(core_rst_n_local),

@@ -8,7 +8,12 @@
 module d_cache #(
     parameter int unsigned WIDTH_OF_D = 32,
     parameter int unsigned COLUMNS    = 4,
-    parameter int unsigned ROWS       = 256
+    parameter int unsigned ROWS       = 256,
+    // Nexys 4 DDR: only the 128 MiB SDRAM window is cacheable. External
+    // peripherals and boot SRAM accesses must preserve their original width
+    // and must never be served from a cached copy.
+    parameter logic [WIDTH_OF_D-1:0] CACHEABLE_ADDR_MASK    = 32'hF800_0000,
+    parameter logic [WIDTH_OF_D-1:0] CACHEABLE_ADDR_PATTERN = 32'h0000_0000
 ) (
     input  logic                         clk,
     input  logic                         rst_n,
@@ -89,6 +94,9 @@ wire [TAG_BITS-1:0] req_tag =
 wire req_hit =
     cache_valid[req_index] &&
     (cache_tag_ram[req_index] == req_tag);
+
+wire req_cacheable =
+    (req_addr_q & CACHEABLE_ADDR_MASK) == CACHEABLE_ADDR_PATTERN;
 
 function automatic logic [WIDTH_OF_D-1:0] line_get_word(
     input logic [LINE_WIDTH-1:0] line,
@@ -183,14 +191,15 @@ always_comb begin
         (bus_resp == SCR1_MEM_RESP_RDY_OK)) begin
 
         // После получения всех 4 слов строка записывается в BRAM одним разом.
-        if ((req_cmd_q == SCR1_MEM_CMD_RD) &&
+        if ((req_cmd_q == SCR1_MEM_CMD_RD) && req_cacheable &&
             (refill_word_q == COLUMNS - 1)) begin
 
             cache_data_we    = 1'b1;
             cache_data_wdata = refill_line_with_bus_word;
 
         // Write-hit: обновляется вся строка за одну операцию записи.
-        end else if ((req_cmd_q == SCR1_MEM_CMD_WR) && req_hit) begin
+        end else if ((req_cmd_q == SCR1_MEM_CMD_WR) &&
+                     req_cacheable && req_hit) begin
             cache_data_we    = 1'b1;
             cache_data_wdata = line_put_word(
                 cache_data_rdata,
@@ -204,10 +213,10 @@ end
 always_comb begin
     core_req_ack = (state == ST_IDLE);
     core_rdata   = response_data_q;
-
-    core_resp = (state == ST_RESP)
-              ? response_q
-              : SCR1_MEM_RESP_NOTRDY;
+    core_resp    = SCR1_MEM_RESP_NOTRDY;
+    if (state == ST_RESP) begin
+        core_resp = response_q;
+    end
 
     bus_req   = (state == ST_BUS_REQ);
     bus_cmd   = req_cmd_q;
@@ -216,7 +225,7 @@ always_comb begin
     bus_wdata = req_wdata_q;
 
     // Refill: четыре выровненных 32-битных чтения.
-    if (req_cmd_q == SCR1_MEM_CMD_RD) begin
+    if ((req_cmd_q == SCR1_MEM_CMD_RD) && req_cacheable) begin
         bus_cmd   = SCR1_MEM_CMD_RD;
         bus_width = SCR1_MEM_WIDTH_WORD;
         bus_addr  = {
@@ -265,7 +274,12 @@ always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
             ST_LOOKUP: begin
                 if (req_cmd_q == SCR1_MEM_CMD_RD) begin
 
-                    if (req_hit) begin
+                    if (!req_cacheable) begin
+                        // A line fill from MMIO could consume UART data and
+                        // would make a polled status register permanently stale.
+                        state <= ST_BUS_REQ;
+
+                    end else if (req_hit) begin
                         response_data_q <= load_align(
                             line_get_word(cache_data_rdata, req_word),
                             req_addr_q[BYTE_OFF_BITS-1:0]
@@ -302,6 +316,12 @@ always_ff @(posedge clk or negedge rst_n) begin : cache_fsm
 
                     if (req_cmd_q == SCR1_MEM_CMD_WR) begin
                         response_data_q <= '0;
+                        response_q      <= SCR1_MEM_RESP_RDY_OK;
+                        state           <= ST_RESP;
+
+                    end else if (!req_cacheable) begin
+                        // scr1_mem_axi has already aligned sub-word reads.
+                        response_data_q <= bus_rdata;
                         response_q      <= SCR1_MEM_RESP_RDY_OK;
                         state           <= ST_RESP;
 
