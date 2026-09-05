@@ -106,6 +106,11 @@ module scr1_pipe_top (
 // Local signals declaration
 //-------------------------------------------------------------------------------
 
+logic        exu2ifu_branch_resolved; 
+logic        exu2ifu_branch_taken;   
+logic [31:0] exu2ifu_branch_pc;       
+logic [31:0] exu2ifu_target_pc;       
+
 // Pipeline control
 logic [`SCR1_XLEN-1:0]                      curr_pc;                // Current PC
 logic [`SCR1_XLEN-1:0]                      next_pc;                // Is written to MEPC on interrupt trap
@@ -332,7 +337,13 @@ scr1_pipe_ifu i_pipe_ifu (
     .ifu2idu_instr_o          (ifu2idu_instr      ),
     .ifu2idu_imem_err_o       (ifu2idu_imem_err   ),
     .ifu2idu_err_rvi_hi_o     (ifu2idu_err_rvi_hi ),
-    .ifu2idu_vd_o             (ifu2idu_vd         )
+    .ifu2idu_vd_o             (ifu2idu_vd         ),
+
+    .exu_branch_resolved_i  (exu2ifu_branch_resolved),
+    .exu_branch_taken_i     (exu2ifu_branch_taken),
+    .exu_branch_pc_i        (exu2ifu_branch_pc),
+    .exu_target_pc_i        (exu2ifu_target_pc)
+    
 );
 
 //-------------------------------------------------------------------------------
@@ -469,7 +480,13 @@ scr1_pipe_exu i_pipe_exu (
     .exu2pipe_pc_curr_o             (curr_pc                 ),
     .exu2csr_pc_next_o              (next_pc                 ),
     .exu2ifu_pc_new_req_o           (new_pc_req              ),
-    .exu2ifu_pc_new_o               (new_pc                  )
+    .exu2ifu_pc_new_o               (new_pc                  ),
+
+
+    .exu_branch_resolved_o  (exu2ifu_branch_resolved),
+    .exu_branch_taken_o     (exu2ifu_branch_taken),
+    .exu_branch_pc_o        (exu2ifu_branch_pc),
+    .exu_target_pc_o        (exu2ifu_target_pc)
 );
 
 //-------------------------------------------------------------------------------

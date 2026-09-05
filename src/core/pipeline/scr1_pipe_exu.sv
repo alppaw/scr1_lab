@@ -55,6 +55,14 @@ module scr1_pipe_exu (
     // Common
     input   logic                               rst_n,                      // EXU reset
     input   logic                               clk,                        // Gated EXU clock
+    
+    
+    output logic        exu_branch_resolved_o,   // Инструкция ветвления выполнена
+    output logic        exu_branch_taken_o,      // Переход реально совершен (Taken)
+    output logic [31:0] exu_branch_pc_o,         // Адрес этой инструкции ветвления
+    output logic [31:0] exu_target_pc_o,         // Реальный адрес цели перехода
+    
+    
 `ifdef SCR1_CLKCTRL_EN
     input   logic                               clk_alw_on,                 // Not-gated EXU clock
     input   logic                               clk_pipe_en,                // EXU clock enabled flag
@@ -1082,5 +1090,23 @@ SCR1_SVA_EXU_NEW_PC_REQ_BEFORE_INIT : assert property (
     ) else $error("EXU Error: new PC req generated before reset sequence is done");
 
 `endif // SCR1_TRGT_SIMULATION
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 1. Ветвление считается выполненным, если команда валидна (exu_queue_vd) 
+//    и это либо условный переход (branch_req), либо безусловный прыжок (jump_req)
+assign exu_branch_resolved_o = exu_queue_vd && (exu_queue.branch_req || exu_queue.jump_req);
+
+// 2. Был ли переход реально совершен - забираем из готового системного сигнала jb_taken
+assign exu_branch_taken_o    = jb_taken; 
+
+// 3. Адрес текущей выполняемой инструкции перехода забираем из регистра pc_curr_ff
+assign exu_branch_pc_o       = pc_curr_ff;      
+
+// 4. Реальный адрес цели перехода забираем из уже вычисленного ядром сигнала jb_new_pc
+assign exu_target_pc_o       = jb_new_pc;
+
+
 
 endmodule : scr1_pipe_exu

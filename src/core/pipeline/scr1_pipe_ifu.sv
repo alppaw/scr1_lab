@@ -32,6 +32,14 @@
 
 module scr1_pipe_ifu
 (
+/////////////////////////////////////////////////////////////////////////////////////// 
+
+    input  logic        exu_branch_resolved_i,
+    input  logic        exu_branch_taken_i,
+    input  logic [31:0] exu_branch_pc_i,
+    input  logic [31:0] exu_target_pc_i,
+    
+    //////////////////////////////////////////////////////////////////////////////////
     // Control signals
     input   logic                                   rst_n,                      // IFU reset
     input   logic                                   clk,                        // IFU clock
@@ -256,6 +264,30 @@ logic                               instr_bypass_vd;
  // - Status logic
 //
 
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+logic        bp_predict_taken;
+logic [31:0] bp_predict_pc;
+
+scr1_branch_predictor i_bp (
+    .clk                  (clk),
+    .rst_n                (rst_n),
+    .curr_pc_i            ({imem_addr_ff, 2'b00}), // Регистр текущего PC в IFU
+    .exu_branch_resolved_i(exu_branch_resolved_i),
+    .exu_branch_taken_i   (exu_branch_taken_i),
+    .exu_branch_pc_i      (exu_branch_pc_i),
+    .exu_target_pc_i      (exu_target_pc_i),
+    .predict_taken_o      (bp_predict_taken),
+    .predict_pc_o         (bp_predict_pc)
+);
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
 // New PC unaligned flag register
 //------------------------------------------------------------------------------
 
@@ -378,7 +410,7 @@ assign q_wr_full   = (q_wr_size == SCR1_IFU_QUEUE_WR_FULL);
 // Write/read pointer registers
 //------------------------------------------------------------------------------
 
-assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i;
+assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i | bp_predict_taken ; // dobavil uslovie  | bp_redict_taken
 
 // Queue write pointer register
 assign q_wptr_upd  = q_flush_req | ~q_wr_none;
@@ -514,27 +546,42 @@ assign imem_handshake_done = ifu2imem_req_o & imem2ifu_req_ack_i;
 
 // IMEM address register
 //------------------------------------------------------------------------------
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//assign imem_addr_upd = imem_handshake_done | exu2ifu_pc_new_req_i;
 
-assign imem_addr_upd = imem_handshake_done | exu2ifu_pc_new_req_i;
+//always_ff @(posedge clk, negedge rst_n) begin
+//    if (~rst_n) begin
+//        imem_addr_ff <= '0;
+//    end else if (imem_addr_upd) begin
+//        imem_addr_ff <= imem_addr_next;
+//    end
+//end
 
-always_ff @(posedge clk, negedge rst_n) begin
-    if (~rst_n) begin
-        imem_addr_ff <= '0;
-    end else if (imem_addr_upd) begin
-        imem_addr_ff <= imem_addr_next;
-    end
-end
+//`ifndef SCR1_NEW_PC_REG
+//assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
+//                      : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
+//                                             : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
+//`else // SCR1_NEW_PC_REG
+//assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
+//                      : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
+//                                             : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
+//`endif // SCR1_NEW_PC_REG
+
 
 `ifndef SCR1_NEW_PC_REG
 assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
+                      : bp_predict_taken     ? bp_predict_pc[`SCR1_XLEN-1:2]                    // ДОБАВЛЕНО: прыгаем по предсказанию
                       : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
                                              : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
 `else // SCR1_NEW_PC_REG
 assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
+                      : bp_predict_taken     ? bp_predict_pc[`SCR1_XLEN-1:2]                    // ДОБАВЛЕНО: прыгаем по предсказанию
                       : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
                                              : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
 `endif // SCR1_NEW_PC_REG
 
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Pending IMEM transactions counter
 //------------------------------------------------------------------------------
 // Pending IMEM transactions occur if IFU request has been acknowledged, but
