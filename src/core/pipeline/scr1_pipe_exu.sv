@@ -1096,7 +1096,7 @@ SCR1_SVA_EXU_NEW_PC_REQ_BEFORE_INIT : assert property (
 
 // 1. Ветвление считается выполненным, если команда валидна (exu_queue_vd) 
 //    и это либо условный переход (branch_req), либо безусловный прыжок (jump_req)
-assign exu_branch_resolved_o = exu_queue_vd && (exu_queue.branch_req || exu_queue.jump_req);
+assign exu_branch_resolved_o = exu2pipe_instret_o && (exu_queue.branch_req || exu_queue.jump_req);
 
 // 2. Был ли переход реально совершен - забираем из готового системного сигнала jb_taken
 assign exu_branch_taken_o    = jb_taken; 

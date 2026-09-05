@@ -271,6 +271,16 @@ logic                               instr_bypass_vd;
 logic        bp_predict_taken;
 logic [31:0] bp_predict_pc;
 
+logic bp_predict_taken_q;
+
+always_ff @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+        bp_predict_taken_q <= 1'b0;
+    end else begin
+        bp_predict_taken_q <= bp_predict_taken & imem_handshake_done;
+    end
+end
+
 scr1_branch_predictor i_bp (
     .clk                  (clk),
     .rst_n                (rst_n),
@@ -410,7 +420,7 @@ assign q_wr_full   = (q_wr_size == SCR1_IFU_QUEUE_WR_FULL);
 // Write/read pointer registers
 //------------------------------------------------------------------------------
 
-assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i | bp_predict_taken ; // dobavil uslovie  | bp_redict_taken
+assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i | bp_predict_taken_q; // dobavil uslovie  | bp_redict_taken
 
 // Queue write pointer register
 assign q_wptr_upd  = q_flush_req | ~q_wr_none;
