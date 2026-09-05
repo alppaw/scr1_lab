@@ -498,7 +498,7 @@ assign core_imem_rdata      = axi_imem_rdata;
 
 `endif // SCR1_IMEM_ROUTER_EN
 
-
+// Cache of Instractions
 i_cache #(
     .WIDTH_OF_I(32),
     .COLUMNS(4),
