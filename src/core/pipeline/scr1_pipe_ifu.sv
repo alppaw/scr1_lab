@@ -75,9 +75,11 @@ module scr1_pipe_ifu
     output  logic [`SCR1_IMEM_DWIDTH-1:0]           ifu2idu_instr_o,            // IFU instruction
     output  logic                                   ifu2idu_imem_err_o,         // Instruction access fault exception
     output  logic                                   ifu2idu_err_rvi_hi_o,       // 1 - imem fault when trying to fetch second half of an unaligned RVI instruction
-    output  logic                                   ifu2idu_vd_o                // IFU request
+    output  logic                                   ifu2idu_vd_o,               // IFU request
+    
+    output logic                                    ifu2idu_pred_taken_o                
 );
-
+assign ifu2idu_pred_taken_o = bp_predict_taken;
 //------------------------------------------------------------------------------
 // Local parameters declaration
 //------------------------------------------------------------------------------
@@ -420,7 +422,7 @@ assign q_wr_full   = (q_wr_size == SCR1_IFU_QUEUE_WR_FULL);
 // Write/read pointer registers
 //------------------------------------------------------------------------------
 
-assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i | bp_predict_taken_q; // dobavil uslovie  | bp_redict_taken
+assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i ; // dobavil uslovie  | bp_redict_taken
 
 // Queue write pointer register
 assign q_wptr_upd  = q_flush_req | ~q_wr_none;
@@ -557,25 +559,25 @@ assign imem_handshake_done = ifu2imem_req_o & imem2ifu_req_ack_i;
 // IMEM address register
 //------------------------------------------------------------------------------
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//assign imem_addr_upd = imem_handshake_done | exu2ifu_pc_new_req_i;
+assign imem_addr_upd = imem_handshake_done | exu2ifu_pc_new_req_i;
 
-//always_ff @(posedge clk, negedge rst_n) begin
-//    if (~rst_n) begin
-//        imem_addr_ff <= '0;
-//    end else if (imem_addr_upd) begin
-//        imem_addr_ff <= imem_addr_next;
-//    end
-//end
+always_ff @(posedge clk, negedge rst_n) begin
+   if (~rst_n) begin
+       imem_addr_ff <= '0;
+   end else if (imem_addr_upd) begin
+       imem_addr_ff <= imem_addr_next;
+   end
+end
 
-//`ifndef SCR1_NEW_PC_REG
-//assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
-//                      : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
-//                                             : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
-//`else // SCR1_NEW_PC_REG
-//assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
-//                      : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
-//                                             : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
-//`endif // SCR1_NEW_PC_REG
+`ifndef SCR1_NEW_PC_REG
+assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
+                     : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
+                                            : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
+`else // SCR1_NEW_PC_REG
+assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
+                     : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
+                                            : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
+`endif // SCR1_NEW_PC_REG
 
 
 `ifndef SCR1_NEW_PC_REG
@@ -624,7 +626,7 @@ assign imem_pnd_txns_q_full   = &imem_pnd_txns_cnt;
 // that subsequent IMEM instructions would be valid.
 
 assign imem_resp_discard_cnt_upd = exu2ifu_pc_new_req_i | imem_resp_er
-                                 | (imem_resp_ok & imem_resp_discard_req);
+                                 | (imem_resp_ok & imem_resp_discard_req) | bp_predict_taken_q;
 
 always_ff @(posedge clk, negedge rst_n) begin
     if (~rst_n) begin
@@ -635,11 +637,11 @@ always_ff @(posedge clk, negedge rst_n) begin
 end
 
 `ifndef SCR1_NEW_PC_REG
-assign imem_resp_discard_cnt_next = exu2ifu_pc_new_req_i     ? imem_pnd_txns_cnt_next - imem_handshake_done
-                                  : imem_resp_er_discard_pnd ? imem_pnd_txns_cnt_next
-                                                             : imem_resp_discard_cnt - 1'b1;
+assign imem_resp_discard_cnt_next = (exu2ifu_pc_new_req_i | bp_predict_taken_q) ? imem_pnd_txns_cnt_next - imem_handshake_done // ИСПРАВЛЕНО
+                                  : imem_resp_er_discard_pnd                    ? imem_pnd_txns_cnt_next
+                                                                                : imem_resp_discard_cnt - 1'b1;
 `else // SCR1_NEW_PC_REG
-assign imem_resp_discard_cnt_next = exu2ifu_pc_new_req_i | imem_resp_er_discard_pnd
+assign imem_resp_discard_cnt_next = exu2ifu_pc_new_req_i | imem_resp_er_discard_pnd | bp_predict_taken_q // ИСПРАВЛЕНО: добавлено «ИЛИ bp_predict_taken_q»
                                   ? imem_pnd_txns_cnt_next
                                   : imem_resp_discard_cnt - 1'b1;
 `endif // SCR1_NEW_PC_REG

@@ -81,7 +81,7 @@ module scr1_branch_predictor (
             for (int i = 0; i < BTB_SIZE; i = i + 1) begin
                 btb_valid[i] <= 1'b0;
             end
-        end else if (exu_branch_resolved_i) begin
+        end else if (exu_branc h_resolved_i) begin
             // Запись новой цели в BTB происходит при успешном разрешении перехода в EXU
             btb_valid[write_index]  <= 1'b1;
             btb_tag[write_index]    <= write_tag;

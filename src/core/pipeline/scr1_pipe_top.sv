@@ -99,9 +99,10 @@ module scr1_pipe_top (
 `endif // SCR1_CLKCTRL_EN
 
     // Fuse
-    input   logic [`SCR1_XLEN-1:0]                      soc2pipe_fuse_mhartid_i     // Fuse MHARTID value
-);
+    input   logic [`SCR1_XLEN-1:0]                      soc2pipe_fuse_mhartid_i     // Fuse MHARTID value,
 
+);
+logic pipe_pred_taken;
 //-------------------------------------------------------------------------------
 // Local signals declaration
 //-------------------------------------------------------------------------------
@@ -342,7 +343,8 @@ scr1_pipe_ifu i_pipe_ifu (
     .exu_branch_resolved_i  (exu2ifu_branch_resolved),
     .exu_branch_taken_i     (exu2ifu_branch_taken),
     .exu_branch_pc_i        (exu2ifu_branch_pc),
-    .exu_target_pc_i        (exu2ifu_target_pc)
+    .exu_target_pc_i        (exu2ifu_target_pc),
+    .ifu2idu_pred_taken_o   (pipe_pred_taken)
     
 );
 
@@ -486,7 +488,8 @@ scr1_pipe_exu i_pipe_exu (
     .exu_branch_resolved_o  (exu2ifu_branch_resolved),
     .exu_branch_taken_o     (exu2ifu_branch_taken),
     .exu_branch_pc_o        (exu2ifu_branch_pc),
-    .exu_target_pc_o        (exu2ifu_target_pc)
+    .exu_target_pc_o        (exu2ifu_target_pc),
+    .exu_pred_taken         (pipe_pred_taken)
 );
 
 //-------------------------------------------------------------------------------

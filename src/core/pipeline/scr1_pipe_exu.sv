@@ -60,7 +60,8 @@ module scr1_pipe_exu (
     output logic        exu_branch_resolved_o,   // Инструкция ветвления выполнена
     output logic        exu_branch_taken_o,      // Переход реально совершен (Taken)
     output logic [31:0] exu_branch_pc_o,         // Адрес этой инструкции ветвления
-    output logic [31:0] exu_target_pc_o,         // Реальный адрес цели перехода
+    output logic [31:0] exu_target_pc_o,         // Реальный адрес цели перехода,
+    input logic         exu_pred_taken,
     
     
 `ifdef SCR1_CLKCTRL_EN
@@ -296,6 +297,8 @@ scr1_csr_access_e                   csr_access_ff;
 scr1_csr_access_e                   csr_access_next;
 logic                               csr_access_init;
 
+
+logic misprediction;
 //------------------------------------------------------------------------------
 // Instruction execution queue
 //------------------------------------------------------------------------------
@@ -1096,7 +1099,7 @@ SCR1_SVA_EXU_NEW_PC_REQ_BEFORE_INIT : assert property (
 
 // 1. Ветвление считается выполненным, если команда валидна (exu_queue_vd) 
 //    и это либо условный переход (branch_req), либо безусловный прыжок (jump_req)
-assign exu_branch_resolved_o = exu2pipe_instret_o && (exu_queue.branch_req || exu_queue.jump_req);
+assign exu_branch_resolved_o = exu2pipe_instret_o && (exu_queue.branch_req || exu_queue.jump_req) && !exu_exc_req;
 
 // 2. Был ли переход реально совершен - забираем из готового системного сигнала jb_taken
 assign exu_branch_taken_o    = jb_taken; 
@@ -1107,6 +1110,23 @@ assign exu_branch_pc_o       = pc_curr_ff;
 // 4. Реальный адрес цели перехода забираем из уже вычисленного ядром сигнала jb_new_pc
 assign exu_target_pc_o       = jb_new_pc;
 
+assign misprediction = (exu_queue_vd & (exu_queue.branch_req || exu_queue.jump_req)) && 
+                       (exu_pred_taken_i != jb_taken); // Предсказали одно, а вышло другое
 
+// Если произошла ошибка предсказания, мы ТРЕБУЕМ новый PC
+assign exu2ifu_pc_new_req_o = init_pc | exu2csr_take_irq_o | exu2csr_take_exc_o ... 
+                            | misprediction; // Редирект только при ошибке предсказания!
+
+// Мультиплексор выбора нового адреса при редиректе
+always_comb begin
+    case (1'b1)
+        init_pc             : exu2ifu_pc_new_o = SCR1_RST_VECTOR;
+        // ...
+        // Если мы предсказали Taken, но переход реально Not-Taken, возвращаем PC на последовательный путь:
+        (misprediction && exu_pred_taken_i) : exu2ifu_pc_new_o = inc_pc; 
+        // Во всех остальных случаях ошибки предсказания прыгаем на реальную цель:
+        default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
+    endcase
+end
 
 endmodule : scr1_pipe_exu

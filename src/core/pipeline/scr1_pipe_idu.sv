@@ -43,7 +43,8 @@ module scr1_pipe_idu
     output  logic                           idu2exu_use_rd_o,       // Instruction uses rd
     output  logic                           idu2exu_use_imm_o,      // Instruction uses immediate
 `endif // SCR1_NO_EXE_STAGE
-    input   logic                           exu2idu_rdy_i           // EXU ready for new data
+    input   logic                           exu2idu_rdy_i           // EXU ready for new dat
+
 );
 
 //-------------------------------------------------------------------------------
