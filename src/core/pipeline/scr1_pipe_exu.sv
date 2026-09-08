@@ -61,7 +61,7 @@ module scr1_pipe_exu (
     output logic        exu_branch_taken_o,      // Переход реально совершен (Taken)
     output logic [31:0] exu_branch_pc_o,         // Адрес этой инструкции ветвления
     output logic [31:0] exu_target_pc_o,         // Реальный адрес цели перехода,
-    input logic         exu_pred_taken,
+    input logic         exu_pred_taken_i,
     
     
 `ifdef SCR1_CLKCTRL_EN
@@ -743,8 +743,7 @@ assign exu2ifu_pc_new_req_o = init_pc                                        // 
 `ifdef SCR1_DBG_EN
                             | dbg_run_start_npbuf
 `endif // SCR1_DBG_EN
-                            | (exu_queue_vd & jb_taken);
-
+                            | misprediction; // ИСПРАВЛЕНО: редирект только при ошибке предсказания
 // Jump/branch signals
 assign branch_taken = exu_queue.branch_req & ialu_cmp;
 assign jb_taken     = exu_queue.jump_req | branch_taken;
@@ -1114,19 +1113,22 @@ assign misprediction = (exu_queue_vd & (exu_queue.branch_req || exu_queue.jump_r
                        (exu_pred_taken_i != jb_taken); // Предсказали одно, а вышло другое
 
 // Если произошла ошибка предсказания, мы ТРЕБУЕМ новый PC
-assign exu2ifu_pc_new_req_o = init_pc | exu2csr_take_irq_o | exu2csr_take_exc_o ... 
-                            | misprediction; // Редирект только при ошибке предсказания!
 
 // Мультиплексор выбора нового адреса при редиректе
 always_comb begin
     case (1'b1)
         init_pc             : exu2ifu_pc_new_o = SCR1_RST_VECTOR;
-        // ...
-        // Если мы предсказали Taken, но переход реально Not-Taken, возвращаем PC на последовательный путь:
-        (misprediction && exu_pred_taken_i) : exu2ifu_pc_new_o = inc_pc; 
-        // Во всех остальных случаях ошибки предсказания прыгаем на реальную цель:
+        exu2csr_take_exc_o,
+        exu2csr_take_irq_o,
+        exu2csr_mret_instr_o: exu2ifu_pc_new_o = csr2exu_new_pc_i;
+`ifdef SCR1_DBG_EN
+        dbg_run_start_npbuf : exu2ifu_pc_new_o = hdu2exu_dbg_new_pc_i;
+`endif // SCR1_DBG_EN
+        wfi_run_start_ff    : exu2ifu_pc_new_o = pc_curr_ff;
+        exu_queue.fencei_req: exu2ifu_pc_new_o = inc_pc;
+        // ДОБАВЛЕНО: Если предсказали Taken, но реально Not-Taken, возвращаем PC на последовательный путь
+        (misprediction && exu_pred_taken_i) : exu2ifu_pc_new_o = inc_pc;
         default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
     endcase
 end
-
 endmodule : scr1_pipe_exu

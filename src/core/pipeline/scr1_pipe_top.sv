@@ -110,8 +110,24 @@ logic pipe_pred_taken;
 logic        exu2ifu_branch_resolved; 
 logic        exu2ifu_branch_taken;   
 logic [31:0] exu2ifu_branch_pc;       
-logic [31:0] exu2ifu_target_pc;       
+logic [31:0] exu2ifu_target_pc;     
 
+logic        bp_predict_taken_idu;
+logic        bp_predict_taken_exu;
+
+always_ff @(posedge clk, negedge pipe_rst_n) begin
+    if (~pipe_rst_n) begin
+        bp_predict_taken_idu <= 1'b0;
+        bp_predict_taken_exu <= 1'b0;
+    end else begin
+        if (idu2ifu_rdy) begin // Если декодер готов принять команду
+            bp_predict_taken_idu <= bp_predict_taken;
+        end
+        if (exu2idu_rdy) begin // Если EXU готов принять команду
+            bp_predict_taken_exu <= bp_predict_taken_idu;
+        end
+    end
+end
 // Pipeline control
 logic [`SCR1_XLEN-1:0]                      curr_pc;                // Current PC
 logic [`SCR1_XLEN-1:0]                      next_pc;                // Is written to MEPC on interrupt trap
@@ -489,7 +505,7 @@ scr1_pipe_exu i_pipe_exu (
     .exu_branch_taken_o     (exu2ifu_branch_taken),
     .exu_branch_pc_o        (exu2ifu_branch_pc),
     .exu_target_pc_o        (exu2ifu_target_pc),
-    .exu_pred_taken         (pipe_pred_taken)
+    .exu_pred_taken_i         (bp_predict_taken_exu)
 );
 
 //-------------------------------------------------------------------------------
