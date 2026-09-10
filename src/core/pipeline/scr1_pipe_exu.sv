@@ -167,9 +167,53 @@ module scr1_pipe_exu (
     output  logic [`SCR1_XLEN-1:0]              exu2pipe_pc_curr_o,         // Current PC
     output  logic [`SCR1_XLEN-1:0]              exu2csr_pc_next_o,          // Next PC
     output  logic                               exu2ifu_pc_new_req_o,       // New PC request
-    output  logic [`SCR1_XLEN-1:0]              exu2ifu_pc_new_o            // New PC data
+    output  logic [`SCR1_XLEN-1:0]              exu2ifu_pc_new_o,            // New PC data
+    input logic        idu2exu_pred_taken_i,
+    input logic [31:0] idu2exu_pred_target_i
 );
+logic        exu_pred_taken_ff;
+logic [31:0] exu_pred_target_ff;
+always_ff @(posedge clk, negedge rst_n) begin
+    if (!rst_n) begin
+        exu_pred_taken_ff  <= 1'b0;
+        exu_pred_target_ff <= '0;
+    end else if (exu_queue_en) begin
+        exu_pred_taken_ff  <= idu2exu_pred_taken_i;
+        exu_pred_target_ff <= idu2exu_pred_target_i;
+    end
+end
+logic branch_resolved;
+logic direction_mispredict;
+logic target_mispredict;
+logic misprediction;
+assign branch_resolved =
+    exu2pipe_instret_o &&
+    (exu_queue.branch_req || exu_queue.jump_req) &&
+    !exu_exc_req;
 
+assign direction_mispredict =
+    exu_pred_taken_ff != jb_taken;
+
+assign target_mispredict =
+    exu_pred_taken_ff &&
+    jb_taken &&
+    (exu_pred_target_ff != jb_new_pc);
+
+assign misprediction =
+    branch_resolved &&
+    (direction_mispredict || target_mispredict);
+
+assign exu_branch_resolved_o = branch_resolved;
+assign exu_branch_taken_o    = jb_taken;
+assign exu_branch_pc_o       = pc_curr_ff;
+assign exu_target_pc_o       = jb_new_pc;
+assign exu_branch_rvc_o      = exu_queue.instr_rvc;
+logic [`SCR1_XLEN-1:0] pc_sequential;
+
+assign pc_sequential =
+    (inc_pc[6] ^ pc_curr_ff[6])
+        ? inc_pc
+        : {pc_curr_ff[`SCR1_XLEN-1:6], inc_pc[5:0]};
 //------------------------------------------------------------------------------
 // Local parameters declaration
 //------------------------------------------------------------------------------
@@ -708,9 +752,10 @@ assign inc_pc = pc_curr_ff + (exu_queue.instr_rvc ? `SCR1_XLEN'd2 : `SCR1_XLEN'd
 assign inc_pc = pc_curr_ff + `SCR1_XLEN'd4;
 `endif // ~SCR1_RVC_EXT
 
-assign pc_curr_next = exu2ifu_pc_new_req_o        ? exu2ifu_pc_new_o
-                    : (inc_pc[6] ^ pc_curr_ff[6]) ? inc_pc
-                                                  : {pc_curr_ff[`SCR1_XLEN-1:6], inc_pc[5:0]};
+assign pc_curr_next =
+      exu2ifu_pc_new_req_o              ? exu2ifu_pc_new_o
+    : (branch_resolved && jb_taken)     ? jb_new_pc
+                                        : pc_sequential;
 
 // New PC multiplexer
 //------------------------------------------------------------------------------
@@ -723,28 +768,31 @@ always_comb begin
         exu2csr_mret_instr_o: exu2ifu_pc_new_o = csr2exu_new_pc_i;
 `ifdef SCR1_DBG_EN
         dbg_run_start_npbuf : exu2ifu_pc_new_o = hdu2exu_dbg_new_pc_i;
-`endif // SCR1_DBG_EN
+`endif
         wfi_run_start_ff    : exu2ifu_pc_new_o = pc_curr_ff;
         exu_queue.fencei_req: exu2ifu_pc_new_o = inc_pc;
-        default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
+
+        misprediction:
+            exu2ifu_pc_new_o =
+                jb_taken ? jb_new_pc : inc_pc;
+
+        default:
+            exu2ifu_pc_new_o =
+                ialu_addr_res & SCR1_JUMP_MASK;
     endcase
 end
 
-assign exu2ifu_pc_new_req_o = init_pc                                        // reset
-                            | exu2csr_take_irq_o
-                            | exu2csr_take_exc_o
-                            | (exu2csr_mret_instr_o & ~csr2exu_mstatus_mie_up_i)
-                            | (exu_queue_vd & exu_queue.fencei_req)
-                            | (wfi_run_start_ff
-`ifdef SCR1_CLKCTRL_EN
-                            & clk_pipe_en
-`endif // SCR1_CLKCTRL_EN
-                            )
+assign exu2ifu_pc_new_req_o =
+      init_pc
+    | exu2csr_take_irq_o
+    | exu2csr_take_exc_o
+    | (exu2csr_mret_instr_o & ~csr2exu_mstatus_mie_up_i)
+    | (exu_queue_vd & exu_queue.fencei_req)
+    | wfi_restart_condition
 `ifdef SCR1_DBG_EN
-                            | dbg_run_start_npbuf
-`endif // SCR1_DBG_EN
-                            | misprediction; // ИСПРАВЛЕНО: редирект только при ошибке предсказания
-// Jump/branch signals
+    | dbg_run_start_npbuf
+`endif
+    | misprediction;
 assign branch_taken = exu_queue.branch_req & ialu_cmp;
 assign jb_taken     = exu_queue.jump_req | branch_taken;
 assign jb_new_pc    = ialu_addr_res & SCR1_JUMP_MASK;
@@ -1012,15 +1060,7 @@ assign exu2tdu_imon_o.vd    = exu_queue_vd;
 assign exu2tdu_imon_o.req   = exu2pipe_instret_o;
 assign exu2tdu_imon_o.addr  = pc_curr_ff;
 
-always_comb begin
-    exu2tdu_ibrkpt_ret_o = '0;
-    if (exu_queue_vd) begin
-        exu2tdu_ibrkpt_ret_o = tdu2exu_ibrkpt_match_i;
-        if (lsu_req) begin
-            exu2tdu_ibrkpt_ret_o[SCR1_TDU_MTRIG_NUM-1:0] |= tdu2lsu_dbrkpt_match_i;
-        end
-    end
-end
+
 `endif // SCR1_TDU_EN
 
 
@@ -1098,19 +1138,7 @@ SCR1_SVA_EXU_NEW_PC_REQ_BEFORE_INIT : assert property (
 
 // 1. Ветвление считается выполненным, если команда валидна (exu_queue_vd) 
 //    и это либо условный переход (branch_req), либо безусловный прыжок (jump_req)
-assign exu_branch_resolved_o = exu2pipe_instret_o && (exu_queue.branch_req || exu_queue.jump_req) && !exu_exc_req;
 
-// 2. Был ли переход реально совершен - забираем из готового системного сигнала jb_taken
-assign exu_branch_taken_o    = jb_taken; 
-
-// 3. Адрес текущей выполняемой инструкции перехода забираем из регистра pc_curr_ff
-assign exu_branch_pc_o       = pc_curr_ff;      
-
-// 4. Реальный адрес цели перехода забираем из уже вычисленного ядром сигнала jb_new_pc
-assign exu_target_pc_o       = jb_new_pc;
-
-assign misprediction = (exu_queue_vd & (exu_queue.branch_req || exu_queue.jump_req)) && 
-                       (exu_pred_taken_i != jb_taken); // Предсказали одно, а вышло другое
 
 // Если произошла ошибка предсказания, мы ТРЕБУЕМ новый PC
 

@@ -77,9 +77,62 @@ module scr1_pipe_ifu
     output  logic                                   ifu2idu_err_rvi_hi_o,       // 1 - imem fault when trying to fetch second half of an unaligned RVI instruction
     output  logic                                   ifu2idu_vd_o,               // IFU request
     
-    output logic                                    ifu2idu_pred_taken_o                
+    output logic                                    ifu2idu_pred_taken_o,
+
+    output logic        ifu2idu_pred_taken_o,
+    output logic [31:0] ifu2idu_pred_target_o                
 );
-assign ifu2idu_pred_taken_o = bp_predict_taken;
+
+logic        req_pred_taken_ff;
+logic [31:0] req_pred_target_ff;
+logic        req_meta_valid_ff;
+
+logic        req_pred_taken;
+logic [31:0] req_pred_target;
+assign req_pred_taken =
+    bp_predict_taken &&
+    !exu2ifu_pc_new_req_i;
+
+assign req_pred_target = bp_predict_pc;
+always_ff @(posedge clk, negedge rst_n) begin
+    if (!rst_n) begin
+        req_pred_taken_ff  <= 1'b0;
+        req_pred_target_ff <= '0;
+        req_meta_valid_ff  <= 1'b0;
+        q_pred_taken  <= '{default: 1'b0};
+        q_pred_target <= '{default: '0};
+    end else begin
+        if (imem_handshake_done) begin
+            req_pred_taken_ff  <= req_pred_taken;
+            req_pred_target_ff <= req_pred_target;
+            req_meta_valid_ff  <= 1'b1;
+        end
+
+        if (imem_resp_received && !imem_handshake_done) begin
+            req_meta_valid_ff <= 1'b0;
+        end
+    end
+end
+logic imem_no_pending;
+assign imem_no_pending = ~|imem_pnd_txns_cnt;
+logic imem_can_request;
+assign imem_can_request =
+    imem_no_pending |
+    imem_resp_received;
+
+logic        q_pred_taken  [SCR1_IFU_Q_SIZE_HALF];
+logic [31:0] q_pred_target [SCR1_IFU_Q_SIZE_HALF];
+
+logic        q_pred_taken_head;
+logic [31:0] q_pred_target_head;
+assign q_pred_taken_head =
+    q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
+
+assign q_pred_target_head =
+    q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
+
+assign ifu2idu_pred_taken_o  = q_pred_taken_head;
+assign ifu2idu_pred_target_o = q_pred_target_head;
 //------------------------------------------------------------------------------
 // Local parameters declaration
 //------------------------------------------------------------------------------
@@ -422,7 +475,9 @@ assign q_wr_full   = (q_wr_size == SCR1_IFU_QUEUE_WR_FULL);
 // Write/read pointer registers
 //------------------------------------------------------------------------------
 
-assign q_flush_req = exu2ifu_pc_new_req_i | pipe2ifu_stop_fetch_i ; // dobavil uslovie  | bp_redict_taken
+assign q_flush_req =
+    exu2ifu_pc_new_req_i |
+    pipe2ifu_stop_fetch_i;
 
 // Queue write pointer register
 assign q_wptr_upd  = q_flush_req | ~q_wr_none;
@@ -471,12 +526,22 @@ always_ff @(posedge clk, negedge rst_n) begin
             SCR1_IFU_QUEUE_WR_HI    : begin
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_rdata_hi;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_resp_er;
+                q_pred_taken[q_wptr] <= '0;
+                q_pred_target[q_wptr] <= '0;
+
+                q_pred_taken[q_wptr + 1'b1] <= 1'b0;
+                q_pred_target[q_wptr + 1'b1] <= '0;
             end
             SCR1_IFU_QUEUE_WR_FULL  : begin
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_rdata_lo;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_resp_er;
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_rdata_hi;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_resp_er;
+                q_pred_taken[q_wptr] <= resp_pred_taken;
+                q_pred_target[q_wptr] <= resp_pred_target;
+
+                q_pred_taken[q_wptr + 1'b1] <= 1'b0;
+                q_pred_target[q_wptr + 1'b1] <= '0;
             end
         endcase
     end
@@ -559,14 +624,16 @@ assign imem_handshake_done = ifu2imem_req_o & imem2ifu_req_ack_i;
 // IMEM address register
 //------------------------------------------------------------------------------
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-assign imem_addr_upd = imem_handshake_done | exu2ifu_pc_new_req_i;
+assign imem_addr_upd =
+    imem_handshake_done |
+    exu2ifu_pc_new_req_i;
 
 always_ff @(posedge clk, negedge rst_n) begin
-   if (~rst_n) begin
-       imem_addr_ff <= '0;
-   end else if (imem_addr_upd) begin
-       imem_addr_ff <= imem_addr_next;
-   end
+    if (!rst_n) begin
+        imem_addr_ff <= '0;
+    end else if (imem_addr_upd) begin
+        imem_addr_ff <= imem_addr_next;
+    end
 end
 
 `ifndef SCR1_NEW_PC_REG
@@ -581,10 +648,14 @@ assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
 
 
 `ifndef SCR1_NEW_PC_REG
-assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
-                      : bp_predict_taken     ? bp_predict_pc[`SCR1_XLEN-1:2]                    // ДОБАВЛЕНО: прыгаем по предсказанию
-                      : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
-                                             : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
+assign imem_addr_next =
+      exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
+    : req_pred_taken       ? req_pred_target[`SCR1_XLEN-1:2]
+    : &imem_addr_ff[5:2]   ? imem_addr_ff + imem_handshake_done
+                           : {
+                               imem_addr_ff[`SCR1_XLEN-1:6],
+                               imem_addr_ff[5:2] + imem_handshake_done
+                             };
 `else // SCR1_NEW_PC_REG
 assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
                       : bp_predict_taken     ? bp_predict_pc[`SCR1_XLEN-1:2]                    // ДОБАВЛЕНО: прыгаем по предсказанию
@@ -625,8 +696,10 @@ assign imem_pnd_txns_q_full   = &imem_pnd_txns_cnt;
 // In the 2nd case, since the IMEM responce was erroneous there is no guarantee
 // that subsequent IMEM instructions would be valid.
 
-assign imem_resp_discard_cnt_upd = exu2ifu_pc_new_req_i | imem_resp_er
-                                 | (imem_resp_ok & imem_resp_discard_req) | bp_predict_taken_q;
+assign imem_resp_discard_cnt_upd =
+    exu2ifu_pc_new_req_i |
+    imem_resp_er |
+    (imem_resp_ok & imem_resp_discard_req);
 
 always_ff @(posedge clk, negedge rst_n) begin
     if (~rst_n) begin
