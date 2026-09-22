@@ -14,12 +14,12 @@ module scr1_branch_predictor (
     input  logic        exu_branch_taken_i,      // Сигнал: переход в EXU был совершен (Taken)
     input  logic [31:0] exu_branch_pc_i,         // Адрес инструкции перехода в EXU
     input  logic [31:0] exu_target_pc_i,         // Реальный целевой адрес перехода из EXU
-    input logic exu_branch_rvc_i,         
+    // input logic exu_branch_rvc_i,         
     
     // Выходные сигналы предсказания для IFU
     output logic        predict_taken_o,         // Предсказание: 1 - Taken (прыгаем), 0 - Not Taken
-    output logic [31:0] predict_pc_o,           // Предсказанный адрес цели перехода из BTB
-    output logic exu_branch_rvc_o           
+    output logic [31:0] predict_pc_o           // Предсказанный адрес цели перехода из BTB
+    // output logic exu_branch_rvc_o           
 );
 
     //--------------------------------------------------------------------------
@@ -86,7 +86,7 @@ module scr1_branch_predictor (
             for (int i = 0; i < BTB_SIZE; i = i + 1) begin
                 btb_valid[i] <= 1'b0;
             end
-        end else if (exu_branch_resolved_i && !exu_branch_rvc_i) begin
+        end else if (exu_branch_resolved_i) begin
             // Запись новой цели в BTB происходит при успешном разрешении перехода в EXU
             btb_valid[write_index]  <= 1'b1;
             btb_tag[write_index]    <= write_tag;
@@ -104,5 +104,5 @@ module scr1_branch_predictor (
             end
         end
     end
-assign exu_branch_rvc_o = exu_queue.instr_rvc;
+// assign exu_branch_rvc_o = exu_queue.instr_rvc;
 endmodule

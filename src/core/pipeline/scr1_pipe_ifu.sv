@@ -79,7 +79,6 @@ module scr1_pipe_ifu
     
     output logic                                    ifu2idu_pred_taken_o,
 
-    output logic        ifu2idu_pred_taken_o,
     output logic [31:0] ifu2idu_pred_target_o                
 );
 
@@ -99,8 +98,7 @@ always_ff @(posedge clk, negedge rst_n) begin
         req_pred_taken_ff  <= 1'b0;
         req_pred_target_ff <= '0;
         req_meta_valid_ff  <= 1'b0;
-        q_pred_taken  <= '{default: 1'b0};
-        q_pred_target <= '{default: '0};
+
     end else begin
         if (imem_handshake_done) begin
             req_pred_taken_ff  <= req_pred_taken;
@@ -521,6 +519,8 @@ always_ff @(posedge clk, negedge rst_n) begin
     if (~rst_n) begin
         q_data  <= '{SCR1_IFU_Q_SIZE_HALF{'0}};
         q_err   <= '{SCR1_IFU_Q_SIZE_HALF{1'b0}};
+        q_pred_taken  <= '{default: 1'b0};
+        q_pred_target <= '{default: '0};
     end else if (q_wr_en) begin
         case (q_wr_size)
             SCR1_IFU_QUEUE_WR_HI    : begin
@@ -537,8 +537,8 @@ always_ff @(posedge clk, negedge rst_n) begin
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_resp_er;
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_rdata_hi;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_resp_er;
-                q_pred_taken[q_wptr] <= resp_pred_taken;
-                q_pred_target[q_wptr] <= resp_pred_target;
+                q_pred_taken[q_wptr] <= req_pred_taken;
+                q_pred_target[q_wptr] <= req_pred_target;
 
                 q_pred_taken[q_wptr + 1'b1] <= 1'b0;
                 q_pred_target[q_wptr + 1'b1] <= '0;
@@ -636,15 +636,6 @@ always_ff @(posedge clk, negedge rst_n) begin
     end
 end
 
-`ifndef SCR1_NEW_PC_REG
-assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
-                     : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
-                                            : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
-`else // SCR1_NEW_PC_REG
-assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
-                     : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
-                                            : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
-`endif // SCR1_NEW_PC_REG
 
 
 `ifndef SCR1_NEW_PC_REG

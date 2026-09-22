@@ -185,7 +185,6 @@ end
 logic branch_resolved;
 logic direction_mispredict;
 logic target_mispredict;
-logic misprediction;
 assign branch_resolved =
     exu2pipe_instret_o &&
     (exu_queue.branch_req || exu_queue.jump_req) &&
@@ -342,7 +341,7 @@ scr1_csr_access_e                   csr_access_next;
 logic                               csr_access_init;
 
 
-logic misprediction;
+
 //------------------------------------------------------------------------------
 // Instruction execution queue
 //------------------------------------------------------------------------------
@@ -788,7 +787,7 @@ assign exu2ifu_pc_new_req_o =
     | exu2csr_take_exc_o
     | (exu2csr_mret_instr_o & ~csr2exu_mstatus_mie_up_i)
     | (exu_queue_vd & exu_queue.fencei_req)
-    | wfi_restart_condition
+    | wfi_run_start_ff
 `ifdef SCR1_DBG_EN
     | dbg_run_start_npbuf
 `endif
@@ -1143,20 +1142,5 @@ SCR1_SVA_EXU_NEW_PC_REQ_BEFORE_INIT : assert property (
 // Если произошла ошибка предсказания, мы ТРЕБУЕМ новый PC
 
 // Мультиплексор выбора нового адреса при редиректе
-always_comb begin
-    case (1'b1)
-        init_pc             : exu2ifu_pc_new_o = SCR1_RST_VECTOR;
-        exu2csr_take_exc_o,
-        exu2csr_take_irq_o,
-        exu2csr_mret_instr_o: exu2ifu_pc_new_o = csr2exu_new_pc_i;
-`ifdef SCR1_DBG_EN
-        dbg_run_start_npbuf : exu2ifu_pc_new_o = hdu2exu_dbg_new_pc_i;
-`endif // SCR1_DBG_EN
-        wfi_run_start_ff    : exu2ifu_pc_new_o = pc_curr_ff;
-        exu_queue.fencei_req: exu2ifu_pc_new_o = inc_pc;
-        // ДОБАВЛЕНО: Если предсказали Taken, но реально Not-Taken, возвращаем PC на последовательный путь
-        (misprediction && exu_pred_taken_i) : exu2ifu_pc_new_o = inc_pc;
-        default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
-    endcase
-end
+
 endmodule : scr1_pipe_exu
