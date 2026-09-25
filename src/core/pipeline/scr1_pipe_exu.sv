@@ -64,6 +64,7 @@ module scr1_pipe_exu (
     input   logic                               idu2exu_req_i,              // Request form IDU to EXU
     output  logic                               exu2idu_rdy_o,              // EXU ready for new data from IDU
     input   type_scr1_exu_cmd_s                 idu2exu_cmd_i,              // EXU command
+    input   logic                               idu2exu_branch_predicted_i, // Fetch was redirected for this branch
     input   logic                               idu2exu_use_rs1_i,          // Clock gating on rs1_addr field
     input   logic                               idu2exu_use_rs2_i,          // Clock gating on rs2_addr field
 `ifndef SCR1_NO_EXE_STAGE
@@ -250,6 +251,7 @@ logic                               init_pc;
 logic [`SCR1_XLEN-1:0]              inc_pc;
 
 logic                               branch_taken;
+logic                               branch_predicted;
 logic                               jb_taken;
 logic [`SCR1_XLEN-1:0]              jb_new_pc;
 `ifndef SCR1_RVC_EXT
@@ -317,6 +319,14 @@ assign exu_queue_barrier = wfi_halted_ff | wfi_halt_req | wfi_run_start_ff
 
 assign exu_queue_en = exu2idu_rdy_o & idu2exu_req_i;
 
+always_ff @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+        branch_predicted <= 1'b0;
+    end else if (exu_queue_en) begin
+        branch_predicted <= idu2exu_branch_predicted_i;
+    end
+end
+
 // EXU queue valid flag register
 //------------------------------------------------------------------------------
 
@@ -379,6 +389,7 @@ assign exu_queue_barrier = wfi_halted_ff | wfi_run_start_ff
 ;
 assign exu_queue_vd  = idu2exu_req_i & ~exu_queue_barrier;
 assign exu_queue     = idu2exu_cmd_i;
+assign branch_predicted = idu2exu_branch_predicted_i;
 
 `endif // ~SCR1_NO_EXE_STAGE
 
@@ -697,7 +708,9 @@ assign inc_pc = pc_curr_ff + (exu_queue.instr_rvc ? `SCR1_XLEN'd2 : `SCR1_XLEN'd
 assign inc_pc = pc_curr_ff + `SCR1_XLEN'd4;
 `endif // ~SCR1_RVC_EXT
 
+// A correctly predicted taken branch still changes the architectural PC.
 assign pc_curr_next = exu2ifu_pc_new_req_o        ? exu2ifu_pc_new_o
+                    : (exu_queue_vd & jb_taken)   ? jb_new_pc
                     : (inc_pc[6] ^ pc_curr_ff[6]) ? inc_pc
                                                   : {pc_curr_ff[`SCR1_XLEN-1:6], inc_pc[5:0]};
 
@@ -715,10 +728,13 @@ always_comb begin
 `endif // SCR1_DBG_EN
         wfi_run_start_ff    : exu2ifu_pc_new_o = pc_curr_ff;
         exu_queue.fencei_req: exu2ifu_pc_new_o = inc_pc;
+        (exu_queue.branch_req & branch_predicted & ~branch_taken): exu2ifu_pc_new_o = inc_pc;
         default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
     endcase
 end
 
+// Redirect IFU for a branch only when the resolved direction disagrees with
+// the direction used to fetch the following instruction.
 assign exu2ifu_pc_new_req_o = init_pc                                        // reset
                             | exu2csr_take_irq_o
                             | exu2csr_take_exc_o
@@ -732,7 +748,8 @@ assign exu2ifu_pc_new_req_o = init_pc                                        // 
 `ifdef SCR1_DBG_EN
                             | dbg_run_start_npbuf
 `endif // SCR1_DBG_EN
-                            | (exu_queue_vd & jb_taken);
+                            | (exu_queue_vd & (exu_queue.jump_req
+                                             | (exu_queue.branch_req & (branch_taken ^ branch_predicted))));
 
 // Jump/branch signals
 assign branch_taken = exu_queue.branch_req & ialu_cmp;
@@ -1027,7 +1044,7 @@ assign update_pc_en = (init_pc | exu2pipe_instret_o | exu2csr_take_irq_o)
                     & ~hdu2exu_pc_advmt_dsbl_i & ~hdu2exu_no_commit_i
 `endif // SCR1_DBG_EN
                     ;
-assign update_pc    = exu2ifu_pc_new_req_o ? exu2ifu_pc_new_o : inc_pc;
+assign update_pc    = pc_curr_next;
 
 
 //------------------------------------------------------------------------------

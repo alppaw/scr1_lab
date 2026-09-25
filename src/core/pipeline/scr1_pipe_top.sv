@@ -111,6 +111,13 @@ logic [`SCR1_XLEN-1:0]                      curr_pc;                // Current P
 logic [`SCR1_XLEN-1:0]                      next_pc;                // Is written to MEPC on interrupt trap
 logic                                       new_pc_req;             // New PC request (jumps, branches, traps etc)
 logic [`SCR1_XLEN-1:0]                      new_pc;                 // New PC
+logic                                       branch_predict_taken;
+logic                                       branch_predict_candidate;
+logic                                       branch_predict_req;
+logic [`SCR1_XLEN-1:0]                      branch_predict_pc;
+logic [`SCR1_XLEN-1:0]                      branch_predict_target;
+logic                                       ifu_new_pc_req;
+logic [`SCR1_XLEN-1:0]                      ifu_new_pc;
 
 logic                                       stop_fetch;             // Stop IFU
 logic                                       exu_exc_req;            // Exception request
@@ -298,6 +305,27 @@ assign pipe2dm_pc_sample_o = curr_pc;
 //-------------------------------------------------------------------------------
 // Instruction fetch unit
 //-------------------------------------------------------------------------------
+// Decode has already checked that this is a legal branch and sign-extended its
+// offset. Predict backward branches taken, forward branches not taken.
+`ifdef SCR1_NO_EXE_STAGE
+assign branch_predict_pc = curr_pc;
+`else
+assign branch_predict_pc = next_pc;
+`endif
+assign branch_predict_taken  = idu2exu_cmd.branch_req & idu2exu_cmd.imm[`SCR1_XLEN-1];
+assign branch_predict_target = branch_predict_pc + idu2exu_cmd.imm;
+// Keep the prediction sent to EXU independent of its correction request.
+assign branch_predict_candidate = idu2exu_req & exu2idu_rdy & branch_predict_taken
+                                & ~stop_fetch
+`ifdef SCR1_DBG_EN
+                                & ~fetch_pbuf
+`endif
+                                ;
+assign branch_predict_req = branch_predict_candidate & ~new_pc_req;
+// An older redirect or trap from EXU always takes priority over speculation.
+assign ifu_new_pc_req = new_pc_req | branch_predict_req;
+assign ifu_new_pc     = new_pc_req ? new_pc : branch_predict_target;
+
 scr1_pipe_ifu i_pipe_ifu (
     .rst_n                    (pipe_rst_n         ),
     .clk                      (clk                ),
@@ -311,8 +339,8 @@ scr1_pipe_ifu i_pipe_ifu (
     .imem2ifu_resp_i          (imem2pipe_resp_i   ),
 
     // New PC interface
-    .exu2ifu_pc_new_req_i     (new_pc_req         ),
-    .exu2ifu_pc_new_i         (new_pc             ),
+    .exu2ifu_pc_new_req_i     (ifu_new_pc_req     ),
+    .exu2ifu_pc_new_i         (ifu_new_pc         ),
     .pipe2ifu_stop_fetch_i    (stop_fetch         ),
 
 `ifdef SCR1_DBG_EN
@@ -375,6 +403,7 @@ scr1_pipe_exu i_pipe_exu (
     .idu2exu_req_i                  (idu2exu_req             ),
     .exu2idu_rdy_o                  (exu2idu_rdy             ),
     .idu2exu_cmd_i                  (idu2exu_cmd             ),
+    .idu2exu_branch_predicted_i     (branch_predict_candidate),
     .idu2exu_use_rs1_i              (idu2exu_use_rs1         ),
     .idu2exu_use_rs2_i              (idu2exu_use_rs2         ),
 `ifndef SCR1_NO_EXE_STAGE
