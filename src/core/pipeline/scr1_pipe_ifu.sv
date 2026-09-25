@@ -45,6 +45,10 @@ module scr1_pipe_ifu
     input   logic [`SCR1_IMEM_DWIDTH-1:0]           imem2ifu_rdata_i,           // Instruction memory read data
     input   type_scr1_mem_resp_e                    imem2ifu_resp_i,            // Instruction memory response
 
+    input   logic                                   bp_predict_taken_i,        // Prediction for the requested word
+    input   logic [`SCR1_XLEN-1:0]                  bp_predict_target_i,
+    output  logic [`SCR1_XLEN-1:0]                  ifu2bp_lookup_pc_o,
+
     // IFU <-> EXU New PC interface
     input   logic                                   exu2ifu_pc_new_req_i,       // New PC request (jumps, branches, traps etc)
     input   logic [`SCR1_XLEN-1:0]                  exu2ifu_pc_new_i,           // New PC
@@ -67,6 +71,8 @@ module scr1_pipe_ifu
     output  logic [`SCR1_IMEM_DWIDTH-1:0]           ifu2idu_instr_o,            // IFU instruction
     output  logic                                   ifu2idu_imem_err_o,         // Instruction access fault exception
     output  logic                                   ifu2idu_err_rvi_hi_o,       // 1 - imem fault when trying to fetch second half of an unaligned RVI instruction
+    output  logic                                   ifu2idu_pred_taken_o,
+    output  logic [`SCR1_XLEN-1:0]                  ifu2idu_pred_target_o,
     output  logic                                   ifu2idu_vd_o                // IFU request
 );
 
@@ -179,6 +185,14 @@ logic                               q_err   [SCR1_IFU_Q_SIZE_HALF];
 logic                               q_err_head;
 logic                               q_err_next;
 
+// Metadata is attached to the low halfword of the predicted IMEM word.
+logic                               q_pred_taken [SCR1_IFU_Q_SIZE_HALF];
+logic [`SCR1_XLEN-1:0]              q_pred_target [SCR1_IFU_Q_SIZE_HALF];
+logic                               q_pred_taken_head;
+logic                               q_pred_taken_next;
+logic [`SCR1_XLEN-1:0]              q_pred_target_head;
+logic [`SCR1_XLEN-1:0]              q_pred_target_next;
+
 // Instruction queue status signals
 logic                               q_is_empty;
 logic                               q_has_free_slots;
@@ -211,6 +225,14 @@ logic                               imem_resp_discard_req;
 logic                               imem_resp_received;
 logic                               imem_resp_vd;
 logic                               imem_handshake_done;
+logic                               bp_req_taken;
+logic                               bp_req_candidate;
+logic                               bp_resp_taken;
+logic [`SCR1_XLEN-1:0]              bp_resp_target;
+logic [SCR1_TXN_CNT_W-1:0]          bp_req_wptr;
+logic [SCR1_TXN_CNT_W-1:0]          bp_resp_rptr;
+logic                               bp_req_taken_fifo [1 << SCR1_TXN_CNT_W];
+logic [`SCR1_XLEN-1:0]              bp_req_target_fifo [1 << SCR1_TXN_CNT_W];
 
 logic [15:0]                        imem_rdata_lo;
 logic [31:16]                       imem_rdata_hi;
@@ -422,17 +444,25 @@ always_ff @(posedge clk, negedge rst_n) begin
     if (~rst_n) begin
         q_data  <= '{SCR1_IFU_Q_SIZE_HALF{'0}};
         q_err   <= '{SCR1_IFU_Q_SIZE_HALF{1'b0}};
+        q_pred_taken <= '{SCR1_IFU_Q_SIZE_HALF{1'b0}};
+        q_pred_target <= '{SCR1_IFU_Q_SIZE_HALF{'0}};
     end else if (q_wr_en) begin
         case (q_wr_size)
             SCR1_IFU_QUEUE_WR_HI    : begin
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_rdata_hi;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_resp_er;
+                q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]  <= 1'b0;
+                q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_wptr)] <= '0;
             end
             SCR1_IFU_QUEUE_WR_FULL  : begin
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_rdata_lo;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr)]         <= imem_resp_er;
+                q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_wptr)]  <= bp_resp_taken;
+                q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_wptr)] <= bp_resp_target;
                 q_data[SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_rdata_hi;
                 q_err [SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= imem_resp_er;
+                q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)]  <= 1'b0;
+                q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_wptr + 1'b1)] <= '0;
             end
         endcase
     end
@@ -442,6 +472,10 @@ assign q_data_head = q_data [SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
 assign q_data_next = q_data [SCR1_IFU_QUEUE_ADR_W'(q_rptr + 1'b1)];
 assign q_err_head  = q_err  [SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
 assign q_err_next  = q_err  [SCR1_IFU_QUEUE_ADR_W'(q_rptr + 1'b1)];
+assign q_pred_taken_head = q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
+assign q_pred_taken_next = q_pred_taken[SCR1_IFU_QUEUE_ADR_W'(q_rptr + 1'b1)];
+assign q_pred_target_head = q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_rptr)];
+assign q_pred_target_next = q_pred_target[SCR1_IFU_QUEUE_ADR_W'(q_rptr + 1'b1)];
 
 // Queue status logic
 //------------------------------------------------------------------------------
@@ -512,6 +546,39 @@ assign imem_resp_er_discard_pnd = imem_resp_er & ~imem_resp_discard_req;
 
 assign imem_handshake_done = ifu2imem_req_o & imem2ifu_req_ack_i;
 
+// IMEM responses are ordered, but may arrive several cycles after a request.
+// Keep each prediction with its request until that word returns. The bypass
+// covers a memory that acknowledges and responds in the same cycle.
+assign ifu2bp_lookup_pc_o = {imem_addr_ff, 2'b00};
+assign bp_req_candidate = bp_predict_taken_i & ~new_pc_unaligned_ff
+                        & ~pipe2ifu_stop_fetch_i
+`ifdef SCR1_DBG_EN
+                        & ~hdu2ifu_pbuf_fetch_i
+`endif
+                        ;
+assign bp_req_taken = bp_req_candidate & ~exu2ifu_pc_new_req_i;
+assign bp_resp_taken = ((imem_pnd_txns_cnt == '0) & imem_handshake_done)
+                     ? bp_req_candidate : bp_req_taken_fifo[bp_resp_rptr];
+assign bp_resp_target = ((imem_pnd_txns_cnt == '0) & imem_handshake_done)
+                      ? bp_predict_target_i : bp_req_target_fifo[bp_resp_rptr];
+
+always_ff @(posedge clk, negedge rst_n) begin
+    if (~rst_n) begin
+        bp_req_wptr <= '0;
+        bp_resp_rptr <= '0;
+    end else begin
+        if (imem_handshake_done) bp_req_wptr <= bp_req_wptr + 1'b1;
+        if (imem_resp_received) bp_resp_rptr <= bp_resp_rptr + 1'b1;
+    end
+end
+
+always_ff @(posedge clk) begin
+    if (imem_handshake_done) begin
+        bp_req_taken_fifo[bp_req_wptr] <= bp_req_taken;
+        bp_req_target_fifo[bp_req_wptr] <= bp_predict_target_i;
+    end
+end
+
 // IMEM address register
 //------------------------------------------------------------------------------
 
@@ -527,10 +594,12 @@ end
 
 `ifndef SCR1_NEW_PC_REG
 assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]                 + imem_handshake_done
+                      : (imem_handshake_done & bp_req_taken) ? bp_predict_target_i[`SCR1_XLEN-1:2]
                       : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
                                              : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
 `else // SCR1_NEW_PC_REG
 assign imem_addr_next = exu2ifu_pc_new_req_i ? exu2ifu_pc_new_i[`SCR1_XLEN-1:2]
+                      : (imem_handshake_done & bp_req_taken) ? bp_predict_target_i[`SCR1_XLEN-1:2]
                       : &imem_addr_ff[5:2]   ? imem_addr_ff                                     + imem_handshake_done
                                              : {imem_addr_ff[`SCR1_XLEN-1:6], imem_addr_ff[5:2] + imem_handshake_done};
 `endif // SCR1_NEW_PC_REG
@@ -753,6 +822,26 @@ always_comb begin
 end
 
 `endif  // SCR1_NO_DEC_STAGE
+
+// A prediction on the low halfword also belongs to an RVI instruction that
+// started in the preceding word. EXU will then repair the speculative path.
+always_comb begin
+    ifu2idu_pred_taken_o = q_head_is_rvi & q_pred_taken_next
+                         ? q_pred_taken_next : q_pred_taken_head;
+    ifu2idu_pred_target_o = q_head_is_rvi & q_pred_taken_next
+                          ? q_pred_target_next : q_pred_target_head;
+`ifdef SCR1_NO_DEC_STAGE
+    if (instr_bypass_vd) begin
+        ifu2idu_pred_taken_o = bp_resp_taken;
+        ifu2idu_pred_target_o = bp_resp_target;
+    end
+`endif
+`ifdef SCR1_DBG_EN
+    if (hdu2ifu_pbuf_fetch_i) ifu2idu_pred_taken_o = 1'b0;
+`endif
+    if (~ifu2idu_vd_o | ifu2idu_imem_err_o) ifu2idu_pred_taken_o = 1'b0;
+    if (~ifu2idu_pred_taken_o) ifu2idu_pred_target_o = '0;
+end
 
 `ifdef SCR1_DBG_EN
 assign ifu2hdu_pbuf_rdy_o = idu2ifu_rdy_i;

@@ -64,7 +64,8 @@ module scr1_pipe_exu (
     input   logic                               idu2exu_req_i,              // Request form IDU to EXU
     output  logic                               exu2idu_rdy_o,              // EXU ready for new data from IDU
     input   type_scr1_exu_cmd_s                 idu2exu_cmd_i,              // EXU command
-    input   logic                               idu2exu_branch_predicted_i, // Fetch was redirected for this branch
+    input   logic                               idu2exu_branch_predicted_i, // Fetch was redirected for this instruction
+    input   logic [`SCR1_XLEN-1:0]              idu2exu_branch_pred_target_i,
     input   logic                               idu2exu_use_rs1_i,          // Clock gating on rs1_addr field
     input   logic                               idu2exu_use_rs2_i,          // Clock gating on rs2_addr field
 `ifndef SCR1_NO_EXE_STAGE
@@ -159,7 +160,12 @@ module scr1_pipe_exu (
     output  logic [`SCR1_XLEN-1:0]              exu2pipe_pc_curr_o,         // Current PC
     output  logic [`SCR1_XLEN-1:0]              exu2csr_pc_next_o,          // Next PC
     output  logic                               exu2ifu_pc_new_req_o,       // New PC request
-    output  logic [`SCR1_XLEN-1:0]              exu2ifu_pc_new_o            // New PC data
+    output  logic [`SCR1_XLEN-1:0]              exu2ifu_pc_new_o,           // New PC data
+    output  logic                              exu2bp_branch_valid_o,
+    output  logic                              exu2bp_branch_taken_o,
+    output  logic [`SCR1_XLEN-1:0]             exu2bp_branch_pc_o,
+    output  logic [`SCR1_XLEN-1:0]             exu2bp_branch_target_o,
+    output  logic                              exu2bp_invalidate_o
 );
 
 //------------------------------------------------------------------------------
@@ -252,6 +258,8 @@ logic [`SCR1_XLEN-1:0]              inc_pc;
 
 logic                               branch_taken;
 logic                               branch_predicted;
+logic [`SCR1_XLEN-1:0]              branch_pred_target;
+logic                               branch_mispredicted;
 logic                               jb_taken;
 logic [`SCR1_XLEN-1:0]              jb_new_pc;
 `ifndef SCR1_RVC_EXT
@@ -322,8 +330,10 @@ assign exu_queue_en = exu2idu_rdy_o & idu2exu_req_i;
 always_ff @(posedge clk, negedge rst_n) begin
     if (~rst_n) begin
         branch_predicted <= 1'b0;
+        branch_pred_target <= '0;
     end else if (exu_queue_en) begin
         branch_predicted <= idu2exu_branch_predicted_i;
+        branch_pred_target <= idu2exu_branch_pred_target_i;
     end
 end
 
@@ -390,6 +400,7 @@ assign exu_queue_barrier = wfi_halted_ff | wfi_run_start_ff
 assign exu_queue_vd  = idu2exu_req_i & ~exu_queue_barrier;
 assign exu_queue     = idu2exu_cmd_i;
 assign branch_predicted = idu2exu_branch_predicted_i;
+assign branch_pred_target = idu2exu_branch_pred_target_i;
 
 `endif // ~SCR1_NO_EXE_STAGE
 
@@ -728,7 +739,7 @@ always_comb begin
 `endif // SCR1_DBG_EN
         wfi_run_start_ff    : exu2ifu_pc_new_o = pc_curr_ff;
         exu_queue.fencei_req: exu2ifu_pc_new_o = inc_pc;
-        (exu_queue.branch_req & branch_predicted & ~branch_taken): exu2ifu_pc_new_o = inc_pc;
+        (branch_predicted & ~jb_taken): exu2ifu_pc_new_o = inc_pc;
         default             : exu2ifu_pc_new_o = ialu_addr_res & SCR1_JUMP_MASK;
     endcase
 end
@@ -748,13 +759,24 @@ assign exu2ifu_pc_new_req_o = init_pc                                        // 
 `ifdef SCR1_DBG_EN
                             | dbg_run_start_npbuf
 `endif // SCR1_DBG_EN
-                            | (exu_queue_vd & (exu_queue.jump_req
-                                             | (exu_queue.branch_req & (branch_taken ^ branch_predicted))));
+                            | (exu_queue_vd & (exu_queue.jump_req | branch_mispredicted));
 
 // Jump/branch signals
 assign branch_taken = exu_queue.branch_req & ialu_cmp;
+assign branch_mispredicted = (branch_taken ^ branch_predicted)
+                           | (branch_taken & branch_predicted
+                              & (jb_new_pc != branch_pred_target));
 assign jb_taken     = exu_queue.jump_req | branch_taken;
 assign jb_new_pc    = ialu_addr_res & SCR1_JUMP_MASK;
+
+// A predicted 16-bit branch could leave the other half of its fetched word
+// in IFU. Train only 32-bit branches until IFU can discard that halfword.
+assign exu2bp_branch_valid_o  = exu2pipe_instret_o & exu_queue.branch_req
+                               & ~exu_queue.instr_rvc & ~exu_exc_req;
+assign exu2bp_branch_taken_o  = branch_taken;
+assign exu2bp_branch_pc_o     = pc_curr_ff;
+assign exu2bp_branch_target_o = jb_new_pc;
+assign exu2bp_invalidate_o    = exu2pipe_instret_o & exu_queue.fencei_req;
 
 // PC to be loaded on MRET from interrupt trap
 assign exu2csr_pc_next_o  = ~exu_queue_vd ? pc_curr_ff

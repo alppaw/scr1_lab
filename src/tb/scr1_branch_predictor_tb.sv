@@ -17,21 +17,44 @@ module scr1_branch_predictor_tb;
     logic imem_ack;
     logic [`SCR1_IMEM_DWIDTH-1:0] imem_data;
     type_scr1_mem_resp_e imem_resp;
-    logic imem_pending = 1'b0;
-    logic [`SCR1_IMEM_AWIDTH-1:0] imem_addr_saved;
+    logic [`SCR1_IMEM_AWIDTH-1:0] imem_resp_addr;
     logic [31:0] rom [0:15];
-    integer predicted = 0;
+    integer early_predictions = 0;
+    integer correct_predictions = 0;
     integer backward_recovery = 0;
     integer compressed_recovery = 0;
     integer forward_recovery = 0;
     integer wrong_path_retired = 0;
     integer cycles = 0;
 
+    assign imem_data = (imem_resp_addr >= 32'h200 && imem_resp_addr < 32'h240)
+                     ? rom[(imem_resp_addr - 32'h200) >> 2] : 32'h00000013;
+
+`ifdef SCR1_BP_PERF
+    // Accept a request each cycle and respond in order two cycles later.
+    logic [1:0] imem_valid;
+    logic [`SCR1_IMEM_AWIDTH-1:0] imem_addr_pipe [0:1];
+    assign imem_ack = imem_req;
+    assign imem_resp = imem_valid[1] ? SCR1_MEM_RESP_RDY_OK : SCR1_MEM_RESP_NOTRDY;
+    assign imem_resp_addr = imem_addr_pipe[1];
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            imem_valid <= '0;
+            imem_addr_pipe[0] <= '0;
+            imem_addr_pipe[1] <= '0;
+        end else begin
+            imem_valid[0] <= imem_ack;
+            imem_valid[1] <= imem_valid[0];
+            if (imem_ack) imem_addr_pipe[0] <= imem_addr;
+            imem_addr_pipe[1] <= imem_addr_pipe[0];
+        end
+    end
+`else
+    logic imem_pending = 1'b0;
+    logic [`SCR1_IMEM_AWIDTH-1:0] imem_addr_saved;
     assign imem_ack = imem_req & ~imem_pending;
     assign imem_resp = imem_pending ? SCR1_MEM_RESP_RDY_OK : SCR1_MEM_RESP_NOTRDY;
-    assign imem_data = (imem_addr_saved >= 32'h200 && imem_addr_saved < 32'h240)
-                     ? rom[(imem_addr_saved - 32'h200) >> 2] : 32'h00000013;
-
+    assign imem_resp_addr = imem_addr_saved;
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             imem_pending <= 1'b0;
@@ -41,6 +64,7 @@ module scr1_branch_predictor_tb;
             if (imem_ack) imem_addr_saved <= imem_addr;
         end
     end
+`endif
 
     scr1_pipe_top dut (
         .pipe_rst_n(rst_n), .clk(clk),
@@ -73,7 +97,11 @@ module scr1_branch_predictor_tb;
 
     initial begin
         foreach (rom[i]) rom[i] = 32'h00000013; // ADDI x0, x0, 0
+`ifdef SCR1_BP_PERF
+        rom[0] = 32'h04000093; // ADDI x1, x0, 64
+`else
         rom[0] = 32'h00300093; // ADDI x1, x0, 3
+`endif
         rom[1] = 32'hfff08093; // ADDI x1, x1, -1
         rom[2] = 32'hfe009ee3; // BNE x1, x0, -4 (taken twice, then not taken)
         rom[3] = 32'h00000463; // BEQ x0, x0, +8 (forward, taken)
@@ -93,7 +121,11 @@ module scr1_branch_predictor_tb;
             cycles = cycles + 1;
             if (imem_ack && imem_cmd != SCR1_MEM_CMD_RD)
                 $fatal(1, "unexpected instruction memory write");
-            if (dut.branch_predict_candidate) predicted = predicted + 1;
+            if (dut.i_pipe_ifu.bp_req_taken && imem_ack)
+                early_predictions = early_predictions + 1;
+            if (dut.instret && dut.curr_pc == 32'h208 &&
+                dut.i_pipe_exu.branch_predicted && dut.i_pipe_exu.branch_taken)
+                correct_predictions = correct_predictions + 1;
             if (dut.instret && dut.curr_pc == 32'h210)
                 wrong_path_retired = wrong_path_retired + 1;
             if (dut.new_pc_req && dut.i_pipe_exu.exu_queue_vd &&
@@ -108,19 +140,24 @@ module scr1_branch_predictor_tb;
                     dut.i_pipe_mprf.mprf_int[3] !== 32'd7 ||
                     dut.i_pipe_mprf.mprf_int[8] !== 32'd0 ||
                     dut.i_pipe_mprf.mprf_int[9] !== 32'd5 ||
-                    predicted < 5 || backward_recovery != 1 ||
-                    compressed_recovery != 1 || forward_recovery != 1 ||
+`ifndef SCR1_BP_DISABLE
+                    early_predictions == 0 || correct_predictions == 0 ||
+`endif
+                    backward_recovery < 1 ||
+                    compressed_recovery < 1 || forward_recovery != 1 ||
                     wrong_path_retired != 0)
-                    $fatal(1, "branch test failed: x1=%h x3=%h x8=%h x9=%h predicted=%0d backward=%0d compressed=%0d forward=%0d wrong=%0d",
+                    $fatal(1, "branch test failed: x1=%h x3=%h x8=%h x9=%h early=%0d correct=%0d backward=%0d compressed=%0d forward=%0d wrong=%0d",
                            dut.i_pipe_mprf.mprf_int[1], dut.i_pipe_mprf.mprf_int[3],
                            dut.i_pipe_mprf.mprf_int[8], dut.i_pipe_mprf.mprf_int[9],
-                           predicted, backward_recovery, compressed_recovery, forward_recovery,
+                           early_predictions, correct_predictions,
+                           backward_recovery, compressed_recovery, forward_recovery,
                            wrong_path_retired);
-                $display("PASS: backward predictions=%0d, backward recovery=%0d, compressed recovery=%0d, forward recovery=%0d",
-                         predicted, backward_recovery, compressed_recovery, forward_recovery);
+                $display("PASS: cycles=%0d early=%0d correct=%0d backward_recovery=%0d compressed=%0d forward=%0d",
+                         cycles, early_predictions, correct_predictions,
+                         backward_recovery, compressed_recovery, forward_recovery);
                 $finish;
             end
-            if (cycles > 200) $fatal(1, "timeout waiting for branch program");
+            if (cycles > 1000) $fatal(1, "timeout waiting for branch program");
         end
     end
 endmodule
