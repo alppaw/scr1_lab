@@ -5,9 +5,9 @@
 
 **Результаты выполненной работы:**
 
-[i_cache.sv](/scr1_lab/src/top/i_cache.sv) - кэш инструкций
+[i_cache.sv](/src/top/i_cache.sv) - кэш инструкций
 
-[d_cache.sv](/scr1_lab/src/top/d_cache.sv) - кэш данных
+[d_cache.sv](/src/top/d_cache.sv) - кэш данных
 
 Кэш инструкций по логике работы Read-Through, т.е ядро общается с кэшем как с основным хранилищем, при промахе кэш подгружает необходимые инструкции из внешней памяти.
 
@@ -20,10 +20,9 @@
 
 | Модификация | dhrystone |
 |---|---|
-|без кэшей,только внешняя память||
-|только с кэшем инструкций||
-|только с кэшем данных||
-|c обоими кэшами||
+|без кэшей,только внешняя память|4539|
+|только с кэшем инструкций|8674|
+|c обоими кэшами|18451|
 
 Результаты показали, что добавление слоя кэшей между ядром и внешней памяти дает значительный прирост к производительности ядра.
 
@@ -34,16 +33,16 @@
 
 Для выполнения этой задачи был выбран путь реализации через tcl-скрипты, для освоения tcl, как инструмент разработки и инструмент взаимодействия со САПРами.
 
-[скрипты](/scr1_lab/tcl_for_scr1/) - директория со скриптами
+[скрипты](/tcl_for_scr1/) - директория со скриптами
 
-[boards](/scr1_lab/tcl_for_scr1/boards) - здесь хранятся необходимые файлы для платы, такие как constraints,verilog_top, загрузчик scr1.
+[boards](/tcl_for_scr1/boards) - здесь хранятся необходимые файлы для платы, такие как constraints,verilog_top, загрузчик scr1.
 
-[add_scr1_axi_files.tcl](/scr1_lab/tcl_for_scr1/add_scr1_axi_files.tcl) - добавляет в проект все файлы ядра.
+[add_scr1_axi_files.tcl](/tcl_for_scr1/add_scr1_axi_files.tcl) - добавляет в проект все файлы ядра.
 
-[add_vd100_custom_files.tcl](/scr1_lab/tcl_for_scr1/add_vd100_custom_files.tcl) - добавляет файлы под конкретную плату.
+[add_vd100_custom_files.tcl](/tcl_for_scr1/add_vd100_custom_files.tcl) - добавляет файлы под конкретную плату.
 
-[vd100_tcl_ex.tcl](/scr1_lab/tcl_for_scr1/vd100_tcl_ex.tcl) - скрипт, создающий блок диаграмму.(изначально сделано в gui и экспортированно)
+[vd100_tcl_ex.tcl](/tcl_for_scr1/vd100_tcl_ex.tcl) - скрипт, создающий блок диаграмму.(изначально сделано в gui и экспортированно)
 
-[init_vd100_boot_bram.tcl](/scr1_lab/tcl_for_scr1/init_vd100_boot_bram.tcl) - скрипт, загружаюший в boot_bram загрузчик scr1.
+[init_vd100_boot_bram.tcl](/tcl_for_scr1/init_vd100_boot_bram.tcl) - скрипт, загружаюший в boot_bram загрузчик scr1.
 
-[create_vd100_proj.tcl](/scr1_lab/tcl_for_scr1/create_vd100_proj.tcl) - свертка всех скриптов, создающая готовый проект.
+[create_vd100_proj.tcl](/tcl_for_scr1/create_vd100_proj.tcl) - свертка всех скриптов, создающая готовый проект.
