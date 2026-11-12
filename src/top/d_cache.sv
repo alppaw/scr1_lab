@@ -1,17 +1,10 @@
 `include "scr1_memif.svh"
 `include "scr1_arch_description.svh"
 
-// Blocking direct-mapped SCR1 data cache.
-// Read allocate, write through, no write allocate, one outstanding request.
-// cache_data_ram is intentionally coded as a synchronous, single-port RAM so
-// that Xilinx Vivado can infer RAMB primitives.
 module d_cache #(
     parameter int unsigned WIDTH_OF_D = 32,
     parameter int unsigned COLUMNS    = 4,
     parameter int unsigned ROWS       = 256,
-    // Nexys 4 DDR: only the 128 MiB SDRAM window is cacheable. External
-    // peripherals and boot SRAM accesses must preserve their original width
-    // and must never be served from a cached copy.
     parameter logic [WIDTH_OF_D-1:0] CACHEABLE_ADDR_MASK    = 32'hF800_0000,
     parameter logic [WIDTH_OF_D-1:0] CACHEABLE_ADDR_PATTERN = 32'h0000_0000
 ) (
@@ -55,8 +48,6 @@ typedef enum logic [2:0] {
 
 state_t state;
 
-// 256 × 128 бит при стандартных параметрах.
-// Не добавляй reset к этому массиву: иначе Vivado не выведет BRAM.
 (* ram_style = "block" *)
 logic [LINE_WIDTH-1:0] cache_data_ram [0:ROWS-1];
 
@@ -66,7 +57,6 @@ logic [INDEX_BITS-1:0] cache_data_waddr;
 logic [LINE_WIDTH-1:0] cache_data_wdata;
 logic                  cache_data_we;
 
-// Теги небольшие, поэтому пусть Vivado реализует их в distributed RAM.
 (* ram_style = "distributed" *)
 logic [TAG_BITS-1:0] cache_tag_ram [0:ROWS-1];
 

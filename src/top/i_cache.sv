@@ -82,9 +82,6 @@ wire refill_commit =
     (bus_resp == SCR1_MEM_RESP_RDY_OK) &&
     (word_counter == COLUMNS - 1);
 
-// Keep the inferred RAM ports in a clock-only process. Placing a memory write
-// in the FSM's asynchronous-reset process makes Vivado dissolve the RAM into
-// flip-flops, even when the reset branch does not explicitly clear the array.
 always_ff @(posedge clk) begin
     if (refill_commit) begin
         cache_data[lat_index] <= refill_line;
