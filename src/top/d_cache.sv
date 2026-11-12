@@ -1,5 +1,6 @@
 `include "scr1_memif.svh"
 `include "scr1_arch_description.svh"
+`include "scr1_riscv_isa_decoding.svh"
 
 module d_cache #(
     parameter WIDTH_OF_D = 32,
