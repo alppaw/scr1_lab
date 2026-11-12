@@ -1,6 +1,3 @@
-/// Copyright by Syntacore LLC © 2016-2021. See LICENSE for details
-/// @file       <scr1_branch_predictor.sv>
-/// @brief      Small branch target buffer for word-aligned branch starts
 
 `include "scr1_arch_description.svh"
 
@@ -40,7 +37,6 @@ assign train_hit = valid[train_index] && (tag[train_index] == train_tag);
 assign train_word_branch = train_valid_i && (train_pc_i[1:0] == 2'b00)
                          && (train_target_i[1:0] == 2'b00);
 
-// A tag match and the high bit of the saturating counter select taken.
 `ifdef SCR1_BP_DISABLE
 assign predict_taken_o = 1'b0;
 `else
@@ -60,8 +56,6 @@ always_ff @(posedge clk, negedge rst_n) begin
     end
 end
 
-// The data arrays do not need a reset: valid masks their contents until
-// the first taken branch supplies a tag, a target and an initial counter.
 always_ff @(posedge clk) begin
     if (rst_n && !invalidate_i && train_word_branch) begin
         if (train_hit) begin
